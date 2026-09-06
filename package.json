@@ -1,0 +1,40 @@
+{
+  "name": "tase-analyst-agent",
+  "version": "1.0.0",
+  "description": "Agent that performs technical analysis on Tel Aviv Stock Exchange (TASE) stocks and produces daily/weekly buy recommendations enriched with Israeli financial news.",
+  "type": "module",
+  "engines": { "node": ">=22.13.0" },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "daily": "tsx src/index.ts --mode=daily",
+    "weekly": "tsx src/index.ts --mode=weekly",
+    "backtest": "tsx src/backtest.ts",
+    "web": "tsx src/server.ts",
+    "dev": "tsx src/index.ts --mode=daily",
+    "summary": "node tools/report-summary.mjs",
+    "test": "node --import tsx --test \"tests/*.test.ts\"",
+    "storage:maintain": "tsx tools/storage-maintenance.ts",
+    "events:import": "tsx tools/events-import.ts",
+    "upload:prepare": "node tools/prepare-upload.mjs"
+  },
+  "keywords": [
+    "tase",
+    "stocks",
+    "technical-analysis",
+    "bollinger",
+    "candlesticks",
+    "israel"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "rss-parser": "^3.13.0",
+    "yahoo-finance2": "^2.11.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.3"
+  }
+}
