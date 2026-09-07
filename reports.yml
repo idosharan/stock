@@ -1,0 +1,222 @@
+name: Manage & Build Reports
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Operation (add/update/remove also generates a daily report)"
+        required: true
+        default: report
+        type: choice
+        options: [report, list, add, update, remove]
+      mode:
+        description: "Report mode (management always uses daily)"
+        required: true
+        default: daily
+        type: choice
+        options: [daily, weekly, both]
+      target:
+        description: "List to manage"
+        type: choice
+        default: portfolio
+        options: [portfolio, watchlist]
+      identifier:
+        description: "Yahoo symbol, or 5-10 digits for a quote-only TASE ETF"
+        type: string
+      name:
+        description: "Instrument name; required on add; blank on update = unchanged"
+        type: string
+      entry_price:
+        description: "Holding entry price: TASE agorot / US USD; blank = unchanged"
+        type: string
+      sector:
+        description: "Sector; blank = unchanged; - clears on update"
+        type: string
+      investing_url:
+        description: "HTTPS www.investing.com/etfs/... or /equities/...; required for TASE number; - clears if optional"
+        type: string
+      alert_below:
+        description: "Positive alert price in instrument units; blank = unchanged; - clears"
+        type: string
+      trigger_index:
+        description: "Yahoo benchmark symbol; blank = unchanged; - clears"
+        type: string
+  schedule:
+    # UTC after US close; TASE trades Monday-Friday in 2026. Not holiday-aware.
+    # GitHub schedules may be delayed or disabled after repository inactivity.
+    - cron: "37 21 * * 1-5"
+    - cron: "47 21 * * 5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reports
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      AUTOMATION_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+    outputs:
+      generate: ${{ steps.plan.outputs.generate }}
+    steps:
+      - name: Reject non-default-branch requests
+        id: guard
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::Run this workflow from the default branch only."
+            exit 1
+          fi
+
+      - name: Checkout latest default branch at execution
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install --no-package-lock; fi
+
+      - name: Validate and plan request
+        id: plan
+        env: &form_inputs
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_IDENTIFIER: ${{ inputs.identifier }}
+          INPUT_NAME: ${{ inputs.name }}
+          INPUT_ENTRY_PRICE: ${{ inputs.entry_price }}
+          INPUT_SECTOR: ${{ inputs.sector }}
+          INPUT_INVESTING_URL: ${{ inputs.investing_url }}
+          INPUT_ALERT_BELOW: ${{ inputs.alert_below }}
+          INPUT_TRIGGER_INDEX: ${{ inputs.trigger_index }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: npm run automation -- plan
+
+      - name: Unit tests before any commit
+        id: tests
+        run: npm test
+
+      - name: Type-check before any commit
+        id: typecheck
+        run: |
+          npx tsc --noEmit
+          npm run typecheck:automation
+
+      - name: List or update instruments
+        id: manage
+        if: steps.plan.outputs.action != 'report'
+        env: *form_inputs
+        run: npm run instruments
+
+      - name: Persist configuration before market collection
+        id: persist_config
+        if: steps.plan.outputs.action != 'report' && steps.plan.outputs.action != 'list'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -- data/instruments.json
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: manage instruments [skip ci]"
+            git push origin "HEAD:$DEFAULT_BRANCH"
+          fi
+
+      - name: Restore candle cache
+        if: steps.plan.outputs.generate == 'true'
+        uses: actions/cache@v4
+        with:
+          path: .cache/candles.sqlite
+          key: candles-sqlite-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: candles-sqlite-v1-
+
+      - name: Run analysis in fresh processes
+        id: generate
+        if: steps.plan.outputs.generate == 'true'
+        env:
+          REPORT_MODES: ${{ steps.plan.outputs.modes }}
+          PORTFOLIO_CAPITAL: ${{ vars.PORTFOLIO_CAPITAL }}
+        run: npm run automation -- generate
+
+      - name: Fresh deterministic digests and optional AI narrative
+        id: finalize
+        if: always() && steps.guard.outcome == 'success' && steps.plan.outputs.generate == 'true'
+        env:
+          SEND_REPORT_TO_GEMINI: ${{ vars.SEND_REPORT_TO_GEMINI }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          WORKFLOW_STATUS: ${{ job.status }}
+        run: npm run automation -- finalize
+
+      - name: Prune storage before assembling artifacts
+        id: maintain
+        if: always() && steps.guard.outcome == 'success' && steps.plan.outputs.generate == 'true'
+        run: npm run storage:maintain
+
+      - name: Persist report history without merging conflicting databases
+        id: persist_reports
+        if: >-
+          always() && steps.plan.outputs.generate == 'true' &&
+          steps.tests.outcome == 'success' && steps.typecheck.outcome == 'success' &&
+          steps.finalize.outcome == 'success' && steps.maintain.outcome == 'success' &&
+          (steps.generate.outcome == 'success' || steps.generate.outcome == 'failure')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A -- reports/ index.html
+          if [ -f reports/state.sqlite ]; then git add -f -- reports/state.sqlite; fi
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: update report history [skip ci]"
+            git push origin "HEAD:$DEFAULT_BRANCH"
+          fi
+
+      - name: Assemble downloadable site and retained-report status
+        id: site
+        if: always() && steps.guard.outcome == 'success' && steps.plan.outputs.generate == 'true'
+        env:
+          WORKFLOW_STATUS: ${{ job.status }}
+        run: npm run automation -- site
+
+      - name: Downloadable report archive and summaries
+        id: artifact
+        if: always() && steps.guard.outcome == 'success' && steps.plan.outputs.generate == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: _site
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload optional Pages artifact
+        id: pages
+        if: success() && steps.plan.outputs.generate == 'true' && vars.PUBLISH_PAGES == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: needs.build.result == 'success' && needs.build.outputs.generate == 'true' && vars.PUBLISH_PAGES == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
