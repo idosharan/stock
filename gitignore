@@ -1,0 +1,13 @@
+node_modules/
+node_modules - Copy/
+/github-upload*/
+dist/
+_site/
+.cache/
+reports/*.sqlite-journal
+reports/*.sqlite-wal
+reports/*.sqlite-shm
+*.log
+summary.txt
+report-text.txt
+.DS_Store
