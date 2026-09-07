@@ -5,12 +5,18 @@ import { createHash } from 'node:crypto';
 import { parseArgs, isDeepStrictEqual } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 
-const { values } = parseArgs({ options: { root: { type: 'string', default: process.cwd() } } });
+const { values } = parseArgs({ options: {
+  root: { type: 'string', default: process.cwd() },
+  output: { type: 'string', default: 'github-upload' },
+} });
+if (!/^github-upload(?:-[A-Za-z0-9][A-Za-z0-9_-]*)?$/.test(values.output)) {
+  throw new Error('--output must be github-upload or github-upload-<name>, a folder name inside the project root (no paths).');
+}
 const root = resolve(values.root);
-const destination = join(root, 'github-upload');
+const destination = join(root, values.output);
 const maxFiles = 100;
 const maxBytes = 25 * 1024 * 1024;
-const files = ['package.json', 'package-lock.json', 'tsconfig.json', 'README.md', 'index.html', '.gitignore', '.gitattributes'];
+const files = ['package.json', 'package-lock.json', 'tsconfig.json', 'README.md', 'index.html', '.gitignore', '.gitattributes', 'data/instruments.json'];
 
 async function collect(directory, allowed) {
   const location = join(root, directory);
@@ -19,7 +25,7 @@ async function collect(directory, allowed) {
     const relative = `${directory}/${entry.name}`;
     if (entry.isSymbolicLink()) throw new Error(`Upload cannot contain a symbolic link: ${relative}`);
     if (entry.isDirectory()) await collect(relative, allowed);
-    else if (entry.isFile() && allowed(entry.name)) files.push(relative);
+    else if (entry.isFile() && allowed(entry.name, relative)) files.push(relative);
   }
 }
 
@@ -27,7 +33,9 @@ await collect('.github/workflows', name => /\.ya?ml$/.test(name));
 await collect('src', name => name.endsWith('.ts'));
 await collect('tests', name => name.endsWith('.ts'));
 await collect('tools', name => /\.(?:mjs|ts)$/.test(name));
-await collect('reports', name => /^(?:report-(?:daily|weekly)|backtest)-\d{4}-\d{2}-\d{2}\.html$/.test(name) || name === 'state.sqlite');
+await collect('reports', (name, relative) => /^(?:report-(?:daily|weekly)|backtest)-\d{4}-\d{2}-\d{2}\.html$/.test(name)
+  || relative === 'reports/state.sqlite'
+  || (relative === `reports/${name}` && /^latest-(?:daily|weekly)(?:-ai)?\.txt$/.test(name)));
 
 for (const required of ['.github/workflows/reports.yml', 'src/index.ts', 'tools/report-summary.mjs', 'reports/state.sqlite']) {
   if (!files.includes(required)) throw new Error(`Required upload file is missing: ${required}`);
@@ -40,7 +48,7 @@ for (const relative of files) {
 }
 try { await mkdir(destination); }
 catch (error) {
-  if (error.code === 'EEXIST') throw new Error('github-upload already exists; move it elsewhere before preparing a new upload. No files were overwritten.');
+  if (error.code === 'EEXIST') throw new Error(`${values.output} already exists; choose a fresh --output github-upload-<name>. No files were overwritten.`);
   throw error;
 }
 
@@ -81,4 +89,4 @@ for (const relative of files.sort()) {
 }
 
 console.log(JSON.stringify({ directory: destination, files: files.length, limit: maxFiles, totalBytes, largest, verified: true }, null, 2));
-console.log('Upload the CONTENTS of github-upload to the repository root, including .github, .gitignore and .gitattributes. Do not upload the parent folder.');
+console.log(`Upload the CONTENTS of ${values.output} to the repository root, including .github, .gitignore and .gitattributes. Do not upload the parent folder.`);

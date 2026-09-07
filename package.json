@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "Agent that performs technical analysis on Tel Aviv Stock Exchange (TASE) stocks and produces daily/weekly buy recommendations enriched with Israeli financial news.",
   "type": "module",
-  "engines": { "node": ">=22.13.0" },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -14,6 +16,9 @@
     "web": "tsx src/server.ts",
     "dev": "tsx src/index.ts --mode=daily",
     "summary": "node tools/report-summary.mjs",
+    "instruments": "tsx tools/manage-instruments.ts",
+    "automation": "tsx tools/automation.ts",
+    "typecheck:automation": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --esModuleInterop --skipLibCheck --strict tools/manage-instruments.ts tools/automation.ts tests/automation.test.ts",
     "test": "node --import tsx --test \"tests/*.test.ts\"",
     "storage:maintain": "tsx tools/storage-maintenance.ts",
     "events:import": "tsx tools/events-import.ts",
@@ -35,6 +40,7 @@
   "devDependencies": {
     "@types/node": "^20.11.30",
     "tsx": "^4.19.2",
-    "typescript": "^5.4.3"
+    "typescript": "^5.4.3",
+    "yaml": "^2.9.0"
   }
 }

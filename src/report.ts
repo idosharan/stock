@@ -14,6 +14,7 @@ import { renderReportHtml, buildIndexHtml, type IndexReportEntry } from "./html.
 import { generateForecast, type HistoricalForecast } from "./forecast.js";
 import { selectDailyPick } from "./pick.js";
 import { PORTFOLIO } from "./config.js";
+import { buildReportSummarySnapshot, type DataHealth } from "./summary.js";
 import { DocumentStore, migrateLegacyStorage, pruneReportHtml, readHistory, type HistoryKey, type MigrationResult } from "./storage.js";
 
 export type Mode = "daily" | "weekly";
@@ -80,9 +81,11 @@ export interface ReportInput {
   /** מחירי סגירה אחרונים להחזקות — לגרפי מיני בדוח. */
   sparkCloses?: Map<string, number[]>;
   historicalForecasts?: Map<string, HistoricalForecast>;
+  dataHealth?: DataHealth;
 }
 
 export async function generateReport(input: ReportInput): Promise<string> {
+  if (!input.results?.length) throw new Error("אין תוצאות ניתוח; הדוח וההיסטוריה הקודמים נשמרו");
   const {
     mode,
     results,
@@ -98,6 +101,7 @@ export async function generateReport(input: ReportInput): Promise<string> {
     priceChecks,
     sparkCloses,
     historicalForecasts,
+    dataHealth,
   } = input;
   const forecast = generateForecast(mode, indices, allNews);
 
@@ -135,7 +139,7 @@ export async function generateReport(input: ReportInput): Promise<string> {
     results
   );
 
-  const html = renderReportHtml({
+  const htmlInput = {
     mode,
     results,
     indices,
@@ -153,7 +157,10 @@ export async function generateReport(input: ReportInput): Promise<string> {
     scorecard,
     signalDeltas,
     historicalForecasts,
-  });
+    dataHealth,
+  };
+  const summary = buildReportSummarySnapshot(htmlInput);
+  const html = renderReportHtml({ ...htmlInput, summary });
 
   // כתיבה לקובץ HTML
   const fileName = `report-${mode}-${stamp}.html`;
@@ -191,6 +198,7 @@ export async function generateReport(input: ReportInput): Promise<string> {
     await archiveReports(dir, store, true);
   } finally { store.close(); }
 
+  await writeFile(join(dir, `latest-${mode}.txt`), `${summary.summary}\n`, "utf8");
   return filePath;
 }
 

@@ -6,54 +6,13 @@
 <title>דוחות ניתוח טכני — בורסת ת"א</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap" />
 <style>
-*{box-sizing:border-box}
-body{margin:0;display:flex;min-height:100vh;font-family:"Segoe UI","Assistant",system-ui,Arial,sans-serif;
-background:#f1f5f9;color:#1e293b}
-.sidebar{width:300px;background:linear-gradient(180deg,#0f172a,#1e293b);color:#e2e8f0;
-display:flex;flex-direction:column;padding:24px 18px;position:sticky;top:0;height:100vh}
-.brand{display:flex;align-items:center;gap:12px;margin-bottom:24px}
-.brand .logo{font-size:32px}
-.brand h1{margin:0;font-size:20px}.brand p{margin:0;font-size:12px;color:#94a3b8}
-.toggle{display:flex;background:rgba(255,255,255,.08);border-radius:12px;padding:4px;margin-bottom:20px}
-.toggle button{flex:1;padding:10px;border:none;background:transparent;color:#cbd5e1;
-font-size:15px;font-weight:700;border-radius:9px;cursor:pointer;transition:.2s}
-.toggle button.active{background:#2563eb;color:#fff;box-shadow:0 4px 12px rgba(37,99,235,.4)}
-.run-box{display:flex;flex-direction:column;gap:8px;margin-bottom:16px;padding-bottom:16px;
-border-bottom:1px solid rgba(255,255,255,.08)}
-.run-btn{padding:11px;border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:700;
-cursor:pointer;transition:.15s}
-.run-btn:hover:not(:disabled){transform:translateY(-1px);filter:brightness(1.08)}
-.run-btn:disabled{opacity:.5;cursor:not-allowed}
-.run-daily{background:#16a34a}.run-weekly{background:#2563eb}
-.run-status{font-size:12px;line-height:1.5;min-height:14px;color:#cbd5e1}
-.run-status code{background:rgba(255,255,255,.12);padding:2px 6px;border-radius:5px;font-size:12px}
-.run-status.busy{color:#fbbf24}.run-status.ok{color:#4ade80}.run-status.err{color:#f87171}
-.run-status .spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,.3);
-border-top-color:#fbbf24;border-radius:50%;animation:spin 1s linear infinite;vertical-align:middle}
-@keyframes spin{to{transform:rotate(360deg)}}
-.report-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
-.report-item{display:flex;align-items:center;gap:10px;width:100%;text-align:right;
-background:rgba(255,255,255,.04);border:1px solid transparent;color:#e2e8f0;
-padding:12px 14px;border-radius:10px;cursor:pointer;font-size:15px;transition:.15s}
-.report-item:hover{background:rgba(255,255,255,.1)}
-.report-item.selected{background:#2563eb;border-color:#60a5fa}
-.report-item .dot{width:8px;height:8px;border-radius:50%;background:#38bdf8;flex-shrink:0}
-.report-item .d{flex:1}
-.report-item .latest{font-size:11px;background:#16a34a;color:#fff;padding:2px 8px;border-radius:999px}
-.no-reports{color:#94a3b8;text-align:center;margin-top:20px;font-size:14px}
-.side-foot{color:#64748b;font-size:12px;text-align:center;margin-top:16px}
-.viewer{flex:1;position:relative}
-.viewer iframe{width:100%;height:100vh;border:none;display:block}
-.empty-state{height:100vh;display:flex;flex-direction:column;align-items:center;
-justify-content:center;color:#94a3b8;gap:12px}
-.empty-state span{font-size:64px}.empty-state p{font-size:18px}
-@media(max-width:760px){body{flex-direction:column}.sidebar{width:100%;height:auto;position:static}
-.viewer iframe,.empty-state{height:70vh}}
 
-:root{--bg:#f5f7f6;--card:#fff;--ink:#252b2a;--muted:#596560;--line:#d9e1de;
---buy:#147568;--strongbuy:#095e53;--hold:#895c12;--sell:#b23b3b;--accent:#086b63;--soft:#edf4f1}
+:root{--bg:#f0f2f4;--card:#fff;--ink:#24272c;--muted:#626870;--line:#d9dde2;
+--buy:#23734e;--strongbuy:#155537;--hold:#895a13;--sell:#b33440;--accent:#343a42;--soft:#f4f5f7;
+--positive:#eaf4ee;--negative:#fcf0f1;--caution:#fcf6e8}
+*{box-sizing:border-box}
 html{color-scheme:light}
-body{font-family:"Heebo","Noto Sans Hebrew","Tahoma",sans-serif;letter-spacing:0;background:var(--bg);color:var(--ink)}
+body{margin:0;font:14px/1.6 "Heebo","Noto Sans Hebrew","Tahoma",sans-serif;letter-spacing:0;background:var(--bg);color:var(--ink)}
 button,input,select{font:inherit;letter-spacing:0}
 *,*::before,*::after{letter-spacing:0}
 :focus-visible{outline:3px solid var(--accent);outline-offset:3px}
@@ -63,32 +22,43 @@ button{touch-action:manipulation}
 bdi,.num,.score,.delta,.idx-price,.idx-score,.pl,.metrics strong,.risk-box strong,.regime-metrics strong,.d{font-variant-numeric:tabular-nums}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
-.sidebar{width:280px;flex-shrink:0;background:var(--card);color:var(--ink);border-inline-end:1px solid var(--line);padding:24px 18px}
-.brand{padding-bottom:18px;border-bottom:2px solid var(--ink);margin-bottom:18px}
-.brand h1{font-size:21px;line-height:1.4}.brand p{color:var(--muted)}
-.toggle{background:#edf1ef;border-radius:6px;padding:3px;gap:3px}
-.toggle button{color:var(--muted);border-radius:4px;min-height:42px;transition:none}
-.toggle button.active{background:var(--accent);color:#fff;box-shadow:none}
-.run-box{border-bottom-color:var(--line)}
-.run-btn{border-radius:4px;min-height:42px;transition:none}.run-btn:hover:not(:disabled){transform:none;filter:none;opacity:.9}
-.run-daily{background:var(--accent)}.run-weekly{background:#394540}
-.run-status,.no-reports,.side-foot{color:var(--muted)}.run-status code{background:var(--soft)}
+body{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh}
+.sidebar{display:flex;flex-direction:column;gap:16px;padding:24px 16px 16px;height:100dvh;position:sticky;top:0;min-width:0;background:var(--soft);border-inline-end:1px solid var(--line);border-top:4px solid var(--ink)}
+.brand{padding-bottom:16px;border-bottom:1px solid var(--line)}.brand-market{font-size:11px;font-weight:700;color:var(--muted)}
+.brand h1{font-size:20px;line-height:1.4;margin:6px 0 0}
+.toggle{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));background:#e5e8ec;border-radius:5px;padding:3px;gap:3px}
+.toggle button{min-height:40px;padding:6px;border:0;border-radius:3px;background:transparent;color:var(--muted);font-size:14px;font-weight:600;cursor:pointer}
+.toggle button.active{background:var(--ink);color:#fff}.toggle button:hover:not(.active){background:var(--card);color:var(--ink)}
+.run-box{display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--line);padding-bottom:16px}
+.manage-link{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:42px;font-size:13px;font-weight:600;text-decoration:none;border-bottom:1px solid var(--ink)}
+.manage-link:hover{color:var(--buy);border-color:var(--buy)}.manage-link span{font-size:18px}
+.run-btn{min-height:40px;padding:8px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--ink);font-size:13px;font-weight:600;cursor:pointer}
+.run-daily{background:var(--ink);color:#fff;border-color:var(--ink)}.run-btn:hover:not(:disabled){border-color:var(--muted)}.run-btn:disabled{opacity:.5;cursor:wait}
+.run-status{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.run-status:empty{display:none}
 .run-status.busy{color:var(--hold)}.run-status.ok{color:var(--buy)}.run-status.err{color:var(--sell)}
-.run-status a{color:var(--accent)}.run-status .spin{border-color:var(--line);border-top-color:var(--accent)}
-.report-list{min-height:0}.report-item{background:transparent;color:var(--ink);border-radius:4px;min-height:46px;transition:none}
-.report-item:hover{background:var(--soft)}.report-item.selected{background:var(--soft);border-color:var(--accent);color:var(--accent)}
-.report-item .latest{border-radius:3px;background:var(--accent)}
-.viewer{min-width:0;background:var(--bg)}.viewer iframe{height:100dvh}.empty-state{color:var(--muted);height:100dvh}.empty-state p{font-size:16px}
-@media(max-width:760px){.sidebar{width:100%;height:auto;padding:16px;border-inline-end:0;border-bottom:1px solid var(--line)}.brand{margin-bottom:12px;padding-bottom:10px}.toggle{margin-bottom:12px}.run-box{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.run-status{grid-column:1/-1}.report-list{max-height:180px}.side-foot{margin-top:10px}.viewer iframe,.empty-state{height:78dvh}}
-@media print{body{display:block}.sidebar{display:none}.viewer iframe{height:100vh}.empty-state{height:auto}}
+.archive-heading{margin:0;font-size:12px;font-weight:500;color:var(--muted)}
+.report-list{display:flex;flex-direction:column;gap:4px;flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable}
+.report-item{display:flex;align-items:center;gap:8px;width:100%;text-align:right;min-height:44px;flex-shrink:0;padding:8px 10px;border:1px solid transparent;border-inline-start:3px solid transparent;border-radius:3px;background:transparent;color:var(--ink);font-size:13px;cursor:pointer}
+.report-item:hover{background:#e9ecef}.report-item.selected{background:var(--card);border-color:var(--line);border-inline-start-color:var(--ink);font-weight:600}
+.report-item .d{flex:1;direction:ltr;text-align:right}.report-item .latest{font-size:10px;padding:1px 5px;border-radius:2px;background:var(--positive);color:var(--buy)}
+.no-reports{font-size:13px;color:var(--muted);margin:12px 0}.side-foot{font-size:10px;color:var(--muted);margin-top:auto}
+.viewer{min-width:0;background:var(--card);display:grid;grid-template-rows:48px minmax(0,1fr);height:100dvh}
+.viewer-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 24px;border-bottom:1px solid var(--line);background:var(--card);min-width:0}
+.viewer-header p{margin:0;font-size:12px;font-weight:600;overflow-wrap:anywhere}.viewer-header a{font-size:12px;white-space:nowrap;text-decoration:none}.viewer-header a:hover{text-decoration:underline}
+.viewer iframe{width:100%;height:100%;min-width:0;min-height:0;border:none;display:block;background:var(--card)}
+.empty-state{display:flex;align-items:center;justify-content:center;color:var(--muted);min-height:0;background:repeating-linear-gradient(0deg,var(--soft),var(--soft) 39px,var(--line) 40px)}
+.empty-state p{font-size:16px;background:var(--card);padding:12px 24px}
+@media(max-width:760px){body{display:block}.sidebar{position:static;height:auto;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 16px;padding:12px;border-inline-end:0;border-bottom:1px solid var(--line)}.brand{padding:0;border:0}.brand h1{font-size:17px;margin:2px 0 0}.brand-market{font-size:10px}.toggle{width:140px;align-self:center}.run-box{grid-column:1/-1;display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px 16px;padding-bottom:8px}.manage-link{min-height:36px;font-size:12px;gap:16px}.run-btn{font-size:12px;min-height:36px}.run-status{width:100%}.archive-heading,.side-foot{display:none}.report-list{grid-column:1/-1;flex-direction:row;max-width:100%;overflow-x:auto;scrollbar-gutter:auto;padding-bottom:4px}.report-item{width:154px;min-height:40px;gap:6px}.viewer{height:calc(100dvh - 210px);min-height:480px;grid-template-rows:44px minmax(0,1fr)}.viewer-header{padding:8px 12px}}
+@media(max-width:360px){.sidebar{column-gap:8px}.toggle{width:120px}.brand h1{font-size:16px}.brand-market{font-size:9px}}
+@media print{body{display:block}.sidebar,.viewer-header{display:none}.viewer{display:block;height:auto}.viewer iframe{height:100vh}.empty-state{height:auto}}
 </style>
 </head>
 <body>
 <aside class="sidebar">
   <div class="brand">
     <div>
-      <h1>TASE Analyst</h1>
-      <p>דוחות ניתוח טכני</p>
+      <span class="brand-market" dir="ltr">TASE / ANALYST</span>
+      <h1>דוחות שוק ההון</h1>
     </div>
   </div>
 
@@ -98,16 +68,19 @@ bdi,.num,.score,.delta,.idx-price,.idx-score,.pl,.metrics strong,.risk-box stron
   </div>
 
   <div class="run-box">
-    <button id="run-daily" class="run-btn run-daily" onclick="runReport('daily')">▶ הרץ דוח יומי</button>
-    <button id="run-weekly" class="run-btn run-weekly" onclick="runReport('weekly')">▶ הרץ דוח שבועי</button>
+    <a id="manage-reports" class="manage-link" hidden target="_blank" rel="noopener noreferrer">ניהול והפקת דוח <span aria-hidden="true">↗</span></a>
+    <button id="run-daily" class="run-btn run-daily" hidden onclick="runReport('daily')">הפקת דוח יומי</button>
+    <button id="run-weekly" class="run-btn run-weekly" hidden onclick="runReport('weekly')">הפקת דוח שבועי</button>
     <div id="run-status" class="run-status" role="status" aria-live="polite"></div>
   </div>
 
+  <h2 class="archive-heading">ארכיון דוחות</h2>
   <nav id="report-list" class="report-list" role="tabpanel" aria-labelledby="btn-daily" tabindex="0"></nav>
   <footer class="side-foot">© 2026 TASE Analyst Agent</footer>
 </aside>
 
 <main class="viewer">
+  <header class="viewer-header"><p id="current-report" aria-live="polite">אין דוח נבחר</p><a id="open-report" hidden target="_blank" rel="noopener noreferrer">פתיחת הדוח <span aria-hidden="true">↗</span></a></header>
   <div id="empty-state" class="empty-state">
     <p>אין דוחות זמינים</p>
   </div>
@@ -115,8 +88,28 @@ bdi,.num,.score,.delta,.idx-price,.idx-score,.pl,.metrics strong,.risk-box stron
 </main>
 
 <script>
-const REPORTS = [{"mode":"daily","date":"2026-08-18","file":"reports/report-daily-2026-08-18.html"},{"mode":"daily","date":"2026-08-19","file":"reports/report-daily-2026-08-19.html"},{"mode":"daily","date":"2026-08-20","file":"reports/report-daily-2026-08-20.html"},{"mode":"daily","date":"2026-08-30","file":"reports/report-daily-2026-08-30.html"},{"mode":"daily","date":"2026-08-31","file":"reports/report-daily-2026-08-31.html"},{"mode":"daily","date":"2026-09-01","file":"reports/report-daily-2026-09-01.html"},{"mode":"daily","date":"2026-09-02","file":"reports/report-daily-2026-09-02.html"},{"mode":"daily","date":"2026-09-03","file":"reports/report-daily-2026-09-03.html"},{"mode":"daily","date":"2026-09-06","file":"reports/report-daily-2026-09-06.html"}];
+const REPORTS = [{"mode":"daily","date":"2026-08-18","file":"reports/report-daily-2026-08-18.html"},{"mode":"daily","date":"2026-08-19","file":"reports/report-daily-2026-08-19.html"},{"mode":"daily","date":"2026-08-20","file":"reports/report-daily-2026-08-20.html"},{"mode":"daily","date":"2026-08-30","file":"reports/report-daily-2026-08-30.html"},{"mode":"daily","date":"2026-08-31","file":"reports/report-daily-2026-08-31.html"},{"mode":"daily","date":"2026-09-01","file":"reports/report-daily-2026-09-01.html"},{"mode":"daily","date":"2026-09-02","file":"reports/report-daily-2026-09-02.html"},{"mode":"daily","date":"2026-09-03","file":"reports/report-daily-2026-09-03.html"},{"mode":"daily","date":"2026-09-06","file":"reports/report-daily-2026-09-06.html"},{"mode":"daily","date":"2026-09-07","file":"reports/report-daily-2026-09-07.html"}];
+const CONFIGURED_WORKFLOW = "";
+const repositoryPattern = new RegExp("^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$");
+const isLocal = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname) && ['http:', 'https:'].includes(location.protocol);
 let currentMode = 'daily';
+
+function managementUrl() {
+  if (CONFIGURED_WORKFLOW) return CONFIGURED_WORKFLOW;
+  const pages = /^([a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)\.github\.io$/i.exec(location.hostname);
+  if (!pages) return '';
+  const segment = location.pathname.split('/').filter(Boolean)[0];
+  const repository = !segment || segment === 'index.html' ? pages[1] + '.github.io' : segment;
+  const path = pages[1] + '/' + repository;
+  return repositoryPattern.test(path) ? 'https://github.com/' + path + '/actions/workflows/reports.yml' : '';
+}
+
+const manager = document.getElementById('manage-reports');
+const workflow = managementUrl();
+manager.hidden = !workflow;
+if (workflow) manager.href = workflow;
+document.querySelectorAll('.run-btn').forEach(button => { button.hidden = !isLocal; });
+if (!isLocal && !workflow) document.getElementById('run-status').textContent = 'קישור הניהול אינו זמין: לא הוגדר מאגר.';
 
 function fmtDate(d) {
   const [y, m, day] = d.split('-');
@@ -155,6 +148,9 @@ function renderList() {
     frame.removeAttribute('src');
     frame.style.display = 'none';
     document.getElementById('empty-state').style.display = 'flex';
+    document.getElementById('current-report').textContent = 'אין דוח ' + (currentMode === 'daily' ? 'יומי' : 'שבועי') + ' זמין';
+    document.getElementById('open-report').hidden = true;
+    document.getElementById('open-report').removeAttribute('href');
     return;
   }
   items.forEach((r, i) => {
@@ -191,46 +187,37 @@ function openReport(file, el) {
   frame.src = file;
   frame.style.display = 'block';
   document.getElementById('empty-state').style.display = 'none';
+  const report = REPORTS.find(entry => entry.file === file);
+  const label = 'דוח ' + (report?.mode === 'weekly' ? 'שבועי' : 'יומי') + (report ? ' · ' + fmtDate(report.date) : '');
+  document.getElementById('current-report').textContent = label;
+  frame.title = label;
+  const link = document.getElementById('open-report');
+  link.href = file;
+  link.hidden = false;
 }
 
 async function runReport(mode) {
   const status = document.getElementById('run-status');
   const btns = document.querySelectorAll('.run-btn');
-  const isStatic = location.protocol === 'file:' ||
-    location.hostname.endsWith('github.io') ||
-    location.hostname.endsWith('github.dev');
-  // בסביבה סטטית (GitHub Pages / פתיחת קובץ) אין שרת שמריץ Node.js.
-  if (isStatic) {
-    status.className = 'run-status err';
-    const host = location.hostname;
-    // ניחוש כתובת מאגר ה-GitHub מתוך כתובת ה-Pages (user.github.io/repo).
-    let actionsUrl = '';
-    if (host.endsWith('github.io')) {
-      const user = host.replace('.github.io', '');
-      const repo = location.pathname.split('/').filter(Boolean)[0] || (user + '.github.io');
-      actionsUrl = 'https://github.com/' + encodeURIComponent(user) + '/' + encodeURIComponent(repo) + '/actions';
-    }
-    status.innerHTML =
-      'הפקת דוח חדש כאן רצה בענן דרך <b>GitHub Actions</b>:' +
-      (actionsUrl
-        ? '<br><a href="' + actionsUrl + '" target="_blank" rel="noopener">פתח/י את לשונית Actions</a> → "Build &amp; Deploy Reports" → Run workflow.'
-        : '<br>פתח/י את לשונית <b>Actions</b> במאגר → "Build &amp; Deploy Reports" → Run workflow.') +
-      '<br>או הרצה מקומית: <code>npm run web</code>';
+  if (!['daily', 'weekly'].includes(mode)) return;
+  if (!isLocal) {
+    if (workflow) manager.focus();
+    else status.textContent = 'קישור הניהול אינו זמין: לא הוגדר מאגר.';
     return;
   }
   btns.forEach(b => b.disabled = true);
   status.className = 'run-status busy';
-  status.innerHTML = '<span class="spin"></span> מריץ דוח ' + (mode === 'daily' ? 'יומי' : 'שבועי') + '... זה עשוי לקחת כמה דקות';
+  status.textContent = 'מפיק דוח ' + (mode === 'daily' ? 'יומי' : 'שבועי') + '...';
   try {
     const res = await fetch('/api/run?mode=' + mode, { method: 'POST' });
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'שגיאה לא ידועה');
+    if (!res.ok || !data.ok) throw new Error(data.error || 'שגיאה בהפקת הדוח');
     status.className = 'run-status ok';
-    status.textContent = '✓ הדוח הופק בהצלחה — טוען מחדש...';
+    status.textContent = 'הדוח הופק בהצלחה. טוען מחדש...';
     setTimeout(() => location.reload(), 1200);
   } catch (err) {
     status.className = 'run-status err';
-    status.textContent = '✗ ' + err.message;
+    status.textContent = 'ההפקה נכשלה: ' + err.message;
     btns.forEach(b => b.disabled = false);
   }
 }

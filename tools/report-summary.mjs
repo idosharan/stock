@@ -76,6 +76,25 @@ const file = args.file === "-" ? null : resolveReportFile();
 const html = readFileSync(file ?? 0, "utf8");
 
 console.log(`# ${file ? path.relative(ROOT, file).replace(/\\/g, "/") : "stdin"}`);
+const embedded = /<script\b(?=[^>]*\btype=["']application\/json["'])(?=[^>]*\bid=["']report-summary["'])[^>]*>([\s\S]*?)<\/script>/i.exec(html);
+let snapshot;
+try {
+  const parsed = embedded ? JSON.parse(embedded[1]) : null;
+  if (parsed?.version === 1 && typeof parsed.summary === "string" && typeof parsed.body === "string"
+    && typeof parsed.ranking?.order === "string" && Array.isArray(parsed.ranking.rows)
+    && parsed.ranking.rows.every((row) => typeof row === "string")) snapshot = parsed;
+} catch {}
+if (snapshot) {
+  if (top === 5) console.log(snapshot.summary);
+  else {
+    console.log(snapshot.body);
+    if (top > 0 && snapshot.ranking.rows.length) {
+      console.log(`\n===== ${top} המובילות בטבלה — סדר ${snapshot.ranking.order} =====`);
+      console.log(snapshot.ranking.rows.slice(0, top).join("\n"));
+    }
+  }
+  process.exit(0);
+}
 const generated = /<p class="generated">([\s\S]*?)<\/p>/.exec(html);
 if (generated) console.log(toText(generated[1]));
 
@@ -115,16 +134,31 @@ if (idxCards.length) {
   }
 }
 
-// פירוט האיתותים להחזקות שבתיק (הסימולים נלקחים מ-PORTFOLIO ב-config)
-const configSrc = readFileSync(path.join(ROOT, "src", "config.ts"), "utf8");
-const portfolioBlock = /export const PORTFOLIO[\s\S]*?\n\];/.exec(configSrc)?.[0] ?? "";
-const heldSymbols = [...portfolioBlock.matchAll(/symbol:\s*"([^"]+)"/g)].map(([, s]) => s);
 const details = new Map(
   [...html.matchAll(/<details class="detail">([\s\S]*?)<\/details>/g)].map(([, body]) => [
     toText(/<small>([\s\S]*?)<\/small>/.exec(body)?.[1] ?? ""),
     body,
   ])
 );
+const portfolioSection = sectionByTitle(html, "התיק שלי");
+const portfolioHtml = portfolioSection?.body.split(/<\/section>/i)[0];
+const portfolioNames = portfolioHtml == null ? null : [...portfolioHtml.matchAll(/<td\b[^>]*class=["']name["'][^>]*>([\s\S]*?)<\/td>/gi)]
+  .map(([, cell]) => toText(cell.replace(/<small\b[^>]*>[\s\S]*?<\/small>/gi, "")));
+const reportSymbols = portfolioHtml == null ? [] : [...portfolioHtml.matchAll(/<small\b[^>]*>([\s\S]*?)<\/small>/gi)]
+  .map(([, text]) => toText(text)).filter((text) => /^(?:\^?[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)*|\d+\.TA)$/.test(text));
+for (const [symbol, body] of details) {
+  const summary = /<summary\b[^>]*>([\s\S]*?)<small\b/i.exec(body)?.[1] ?? "";
+  const name = toText(summary.replace(/<span\b[^>]*class="badge[^>]*>[\s\S]*?<\/span>/i, ""));
+  if (portfolioNames?.includes(name)) reportSymbols.push(symbol);
+}
+let configuredHoldings = [];
+try {
+  const config = JSON.parse(readFileSync(path.join(ROOT, "data", "instruments.json"), "utf8"));
+  if (Array.isArray(config.portfolio)) configuredHoldings = config.portfolio;
+} catch {}
+const heldSymbols = [...new Set([...reportSymbols, ...configuredHoldings
+  .filter((holding) => typeof holding.symbol === "string" && (portfolioHtml == null || portfolioNames?.includes(holding.name)))
+  .map((holding) => holding.symbol)])];
 console.log("\n===== פירוט איתותים — החזקות התיק =====");
 for (const sym of heldSymbols) {
   const body = details.get(sym);

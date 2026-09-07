@@ -8,6 +8,18 @@ import { DocumentStore, migrateLegacyStorage, pruneReportHtml, readCachedCandles
 import { generateReport } from "../src/report.js";
 import * as reportModule from "../src/report.js";
 import { fetchCandles } from "../src/data.js";
+import type { AnalysisResult } from "../src/analysis.js";
+
+const analyzedStock: AnalysisResult = {
+  symbol: "TEST", name: "Storage fixture", price: 100, score: 10, recommendation: "החזקה",
+  signals: [], patterns: [], liquidityNote: "", sequenceStop: null, risk: null, size: null,
+  levels: { support: null, resistance: null }, relativeStrength: null, divergence: null,
+  earningsInDays: null, fundamentals: null, newsSentiment: 0,
+  indicators: { rsi: null, macdHist: null, percentB: null, smaShort: null, smaLong: null,
+    trendUp: false, stochK: null, stochD: null, williamsR: null, atrPct: null, adx: null,
+    obvTrendUp: null, cci: null, mfi: null, roc: null, vwap: null, supertrendUp: null,
+    ichimokuPosition: null, chandelier: null },
+};
 
 function fixture(context: { after: (callback: () => void) => void }): string {
   const root = mkdtempSync(join(tmpdir(), "tase-storage-"));
@@ -157,7 +169,7 @@ test("report generation migrates history, persists state, and prunes before rebu
   writeFileSync(join(dir, "score-history.json"), JSON.stringify({ weekly: { "2026-08-01": { TEST: 9 } } }));
   process.chdir(root);
   try {
-    await generateReport({ mode: "daily", results: [], indices: [], newsByStock: new Map(), allNews: [], generatedAt: new Date("2026-09-06T12:00:00Z") });
+    await generateReport({ mode: "daily", results: [analyzedStock], indices: [], newsByStock: new Map(), allNews: [], generatedAt: new Date("2026-09-06T12:00:00Z") });
     assert.equal(existsSync(join(dir, "score-history.json")), false);
     assert.equal(readdirSync(dir).filter((file) => file.endsWith(".html")).length, 30);
     const index = readFileSync(join(root, "index.html"), "utf8");
@@ -165,7 +177,7 @@ test("report generation migrates history, persists state, and prunes before rebu
     assert.match(index, /report-daily-2026-09-06\.html/);
     const store = new DocumentStore(join(dir, "state.sqlite"));
     try {
-      assert.deepEqual(store.get("score-history"), { weekly: { "2026-08-01": { TEST: 9 } }, daily: { "2026-09-06": {} } });
+      assert.deepEqual(store.get("score-history"), { weekly: { "2026-08-01": { TEST: 9 } }, daily: { "2026-09-06": { TEST: 10 } } });
       assert.ok(store.get("html:report-daily-2026-08-01.html"));
     } finally { store.close(); }
   } finally { process.chdir(previousCwd); }
@@ -179,7 +191,7 @@ test("report generation refuses corrupt legacy history without replacing existin
   writeFileSync(join(dir, "report-daily-2026-09-06.html"), "user report");
   process.chdir(root);
   try {
-    await assert.rejects(generateReport({ mode: "daily", results: [], indices: [], newsByStock: new Map(), allNews: [], generatedAt: new Date("2026-09-06T12:00:00Z") }), /history|migration/i);
+    await assert.rejects(generateReport({ mode: "daily", results: [analyzedStock], indices: [], newsByStock: new Map(), allNews: [], generatedAt: new Date("2026-09-06T12:00:00Z") }), /history|migration/i);
     assert.equal(readFileSync(join(dir, "score-history.json"), "utf8"), "{broken");
     assert.equal(readFileSync(join(dir, "report-daily-2026-09-06.html"), "utf8"), "user report");
   } finally { process.chdir(previousCwd); }

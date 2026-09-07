@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import test from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 import { buildIndexHtml, renderReportHtml, type ReportHtmlInput } from "../src/html.js";
 import type { HistoricalForecast } from "../src/forecast.js";
 import { Script } from "node:vm";
+import { PORTFOLIO, type HoldingDef } from "../src/config.js";
+
+const testPortfolio: HoldingDef[] = [
+  { symbol: "DSCT.TA", name: "בנק דיסקונט", entryPrice: 3314.74 },
+  { name: "קסם S&P Energy ETF", taseNumber: "1145903", entryPrice: 4502,
+    investingUrl: "https://www.investing.com/etfs/ksm-4d-sp-energy" },
+];
+let originalPortfolio: HoldingDef[];
+
+beforeEach(() => {
+  originalPortfolio = PORTFOLIO.slice();
+  PORTFOLIO.splice(0, PORTFOLIO.length, ...structuredClone(testPortfolio));
+});
+
+afterEach(() => {
+  PORTFOLIO.splice(0, PORTFOLIO.length, ...originalPortfolio);
+});
 
 function reportInput(): ReportHtmlInput {
   return {
@@ -169,4 +186,142 @@ test("generated ranking script sorts numeric values and filters names and symbol
   filter();
   assert.equal(count.textContent, "3 מניות");
   assert.equal(empty.hidden, true);
+});
+
+test("report navigation reaches operational sections before the collapsed buy catalog", () => {
+  const html = renderReportHtml({ ...reportInput(), extraPrices: new Map([["קסם S&P Energy ETF", 4502]]) });
+  const navigation = /<nav\b[^>]*aria-label="ניווט בדוח"[^>]*>([\s\S]*?)<\/nav>/.exec(html);
+  assert.ok(navigation, "Report needs section navigation");
+  for (const id of ["summary", "alerts", "portfolio", "rankings", "evidence"]) {
+    assert.ok(navigation[1].includes(`href="#${id}"`), `Missing link to ${id}`);
+    assert.equal([...html.matchAll(new RegExp(`id="${id}"`, "g"))].length, 1, `One target for ${id}`);
+  }
+  assert.ok(html.indexOf('id="alerts"') < html.indexOf('id="portfolio"'));
+  assert.ok(html.indexOf('id="portfolio"') < html.indexOf('id="evidence"'));
+  const catalog = /<details\b([^>]*id="buy-catalog"[^>]*)>/.exec(html);
+  assert.ok(catalog, "Full buy catalog remains available");
+  assert.doesNotMatch(catalog[1], /\bopen\b/);
+  assert.doesNotMatch(html, /class="hero"/);
+  assert.doesNotMatch(html, /<h[1-6][^>]*>\s*[💼🧭📈🔗🔻🛒🌍🎯]/u);
+  assert.match(html, /בהחזקות שנותחו/);
+  assert.match(html, /מחיר בלבד[^<]*ללא ציון או סטופ/);
+  assert.doesNotMatch(html, /כל ההחזקות מעל רמות היציאה/);
+});
+
+test("executive summary stays concise while health dates and the full snapshot remain available", () => {
+  const input = reportInput();
+  input.dataHealth = { expected: 119, analyzed: 118, missingSymbols: ["MISSING.TA"],
+    latestBarDates: Object.fromEntries(Array.from({ length: 119 }, (_, index) => [`STOCK${index}.TA`, "2026-09-04"])),
+    failures: { "MISSING.TA": "אין נתונים <script>" }, warnings: ["איסוף חלקי"] };
+  const html = renderReportHtml(input);
+  const executive = /<div\b[^>]*id="report-summary-text"[^>]*>([\s\S]*?)<\/div>/.exec(html);
+  assert.ok(executive, "Visible executive summary is required");
+  assert.ok(executive[1].length < 2200, "Executive summary must not repeat all bar dates");
+  assert.doesNotMatch(executive[1], /STOCK118/);
+  assert.match(executive[1], /118/);
+  const freshness = /<[^>]*id="data-freshness"[^>]*>([\s\S]*?)<\//.exec(html);
+  assert.ok(freshness);
+  assert.match(freshness[1], /2026-09-04/);
+  const details = /<details\b([^>]*id="health-details"[^>]*)>([\s\S]*?)<\/details>/.exec(html);
+  assert.ok(details);
+  assert.doesNotMatch(details[1], /\bopen\b/);
+  assert.match(details[2], /STOCK118/);
+  const snapshot = JSON.parse(/<script type="application\/json" id="report-summary">([\s\S]*?)<\/script>/.exec(html)![1]);
+  assert.equal(snapshot.dataHealth.expected, 119);
+  assert.equal(snapshot.dataHealth.latestBarDates["STOCK118.TA"], "2026-09-04");
+  assert.ok(snapshot.summary.includes("STOCK118.TA"));
+  assert.match(html, /id="full-summary"/);
+  assert.doesNotMatch(html, /אין נתונים <script>/);
+});
+
+function indexFixture(repository: string | undefined, address: string, entries: Parameters<typeof buildIndexHtml>[0] = []) {
+  const previous = process.env.GITHUB_REPOSITORY;
+  let html: string;
+  try {
+    if (repository === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = repository;
+    html = buildIndexHtml(entries);
+  } finally {
+    if (previous === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = previous;
+  }
+  const nodes: ReturnType<typeof element>[] = [];
+  function element() {
+    const attributes = new Map<string, string>();
+    const children: ReturnType<typeof element>[] = [];
+    const node = { attributes, children, hidden: false, disabled: false, textContent: "", innerHTML: "", href: "", src: "",
+      className: "", tabIndex: 0, style: { display: "" }, onclick: () => {}, focus: () => {},
+      classList: { add: () => {}, remove: () => {}, toggle: () => {} },
+      appendChild: (child: ReturnType<typeof element>) => { children.push(child); },
+      get firstChild() { return children[0]; },
+      setAttribute: (name: string, value: string) => { attributes.set(name, value); },
+      getAttribute: (name: string) => attributes.get(name),
+      removeAttribute: (name: string) => { attributes.delete(name); if (name === "src") node.src = ""; },
+      addEventListener: () => {} };
+    nodes.push(node);
+    return node;
+  }
+  const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], element()]));
+  const requests: { url: string; method: string }[] = [];
+  const context = { document: {
+    getElementById: (id: string) => elements.get(id), querySelector: () => element(),
+    querySelectorAll: (selector: string) => selector === ".run-btn"
+      ? [elements.get("run-daily"), elements.get("run-weekly")]
+      : nodes.filter(node => node.className === "report-item"),
+    createElement: () => element(),
+  }, location: Object.assign(new URL(address), { reload: () => {} }),
+  fetch: async (url: string, options: { method: string }) => {
+    requests.push({ url, method: options.method });
+    return { ok: true, json: async () => ({ ok: true }) };
+  }, setTimeout: () => {} };
+  const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+  new Script(script).runInNewContext(context);
+  return { html, elements, requests, context };
+}
+
+test("configured workflow manager works on custom domains and downloaded reports without local API calls", async () => {
+  for (const address of ["https://finance.example.org/", "file:///C:/reports/index.html"]) {
+    const fixture = indexFixture("analyst/market-reports", address);
+    const manager = fixture.elements.get("manage-reports");
+    assert.ok(manager, "Authenticated workflow manager link is required");
+    assert.equal(manager.href, "https://github.com/analyst/market-reports/actions/workflows/reports.yml");
+    assert.equal(manager.hidden, false);
+    await new Script("runReport('daily')").runInNewContext(fixture.context);
+    assert.deepEqual(fixture.requests, []);
+    assert.equal(fixture.elements.get("run-daily")!.hidden, true);
+  }
+});
+
+test("Pages inference validates host and repository and never creates an unsafe management URL", async () => {
+  for (const [repository, address, expected] of [
+    [undefined, "https://analyst.github.io/market-reports/", "https://github.com/analyst/market-reports/actions/workflows/reports.yml"],
+    [undefined, "https://analyst.github.io/", "https://github.com/analyst/analyst.github.io/actions/workflows/reports.yml"],
+    ["../bad", "https://finance.example.org/", ""],
+    ["owner/repo\"<script>", "file:///C:/index.html", ""],
+    [undefined, "https://evilgithub.io/reports/", ""],
+    [undefined, "https://analyst.github.io/%22%3E%3Cscript%3E/", ""],
+    [undefined, "https://analyst.github.io/../", "https://github.com/analyst/analyst.github.io/actions/workflows/reports.yml"],
+  ]) {
+    const fixture = indexFixture(repository, address!);
+    const manager = fixture.elements.get("manage-reports");
+    assert.ok(manager);
+    assert.equal(manager.href, expected);
+    assert.equal(manager.hidden, !expected);
+    await new Script("runReport('weekly')").runInNewContext(fixture.context);
+    assert.deepEqual(fixture.requests, []);
+  }
+});
+
+test("localhost keeps POST generation and archive selection clears an empty mode", async () => {
+  const fixture = indexFixture("analyst/market-reports", "http://localhost:3000/", [
+    { mode: "daily", date: "2026-09-06", file: "reports/report-daily-2026-09-06.html" },
+    { mode: "daily", date: "2026-09-07", file: "reports/report-daily-2026-09-07.html" },
+  ]);
+  assert.equal(fixture.elements.get("frame")!.src, "reports/report-daily-2026-09-07.html");
+  assert.equal(fixture.elements.get("run-daily")!.hidden, false);
+  await new Script("runReport('daily')").runInNewContext(fixture.context);
+  assert.deepEqual(fixture.requests, [{ url: "/api/run?mode=daily", method: "POST" }]);
+  new Script("setMode('weekly')").runInNewContext(fixture.context);
+  assert.equal(fixture.elements.get("frame")!.src, "");
+  assert.equal(fixture.elements.get("empty-state")!.style.display, "flex");
 });

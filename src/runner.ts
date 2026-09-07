@@ -2,7 +2,7 @@
  * הלוגיקה המרכזית של האייג'נט — משותפת ל-CLI ולשרת ה-Web.
  * מבצעת: משיכת חדשות, ניתוח כל מניה, והפקת דוח.
  */
-import { WATCHLIST, PARAMS, PORTFOLIO, BENCHMARKS } from "./config.js";
+import { WATCHLIST, PARAMS, PORTFOLIO, BENCHMARKS, WORLD_INDICES } from "./config.js";
 import { fetchCandles, resampleWeekly, fetchInvestingPrice, fetchTasePrice, ensureTls } from "./data.js";
 import { fetchAllNews, matchNewsForStock, type StockNews } from "./news.js";
 import {
@@ -20,6 +20,7 @@ import { generateReport, type Mode } from "./report.js";
 import { historicalForecast, validateEvents, type HistoricalForecast, type HistoricalEvent } from "./forecast.js";
 import { DocumentStore } from "./storage.js";
 import { join } from "node:path";
+import type { DataHealth } from "./summary.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -51,21 +52,32 @@ export interface RunResult {
   regime: MarketRegime | null;
   correlations: CorrPair[];
   priceChecks: PriceCheck[];
+  dataHealth: DataHealth;
+}
+
+function recordDailyBarDate(health: DataHealth, symbol: string, candles: Awaited<ReturnType<typeof fetchCandles>>): void {
+  const latest = candles.at(-1)?.date;
+  health.latestBarDates[symbol] = latest && Number.isFinite(latest.getTime()) ? latest.toISOString().slice(0, 10) : null;
 }
 
 /** מושך את מדד הייחוס עם נפילה חזרה לסימול חלופי אם הראשי אינו זמין. */
 async function fetchBenchmark(
   def: { symbol: string; fallback: string; name: string },
   days: number,
-  log: (m: string) => void
+  log: (m: string) => void,
+  health: DataHealth
 ): Promise<{ symbol: string; name: string; closes: number[]; candles: Awaited<ReturnType<typeof fetchCandles>> } | null> {
   for (const sym of [def.symbol, def.fallback]) {
+    health.latestBarDates[sym] = null;
     try {
       const candles = await fetchCandles(sym, days);
+      recordDailyBarDate(health, sym, candles);
       if (candles.length > 60) {
         return { symbol: sym, name: def.name, closes: candles.map((c) => c.close), candles };
       }
+      health.warnings.push(`מדד ייחוס ${sym}: אין מספיק נתונים`);
     } catch (err) {
+      health.warnings.push(`מדד ייחוס ${sym}: ${(err as Error).message}`);
       log(`   ⚠️  מדד ייחוס ${sym}: ${(err as Error).message}`);
     }
   }
@@ -84,6 +96,11 @@ export async function runAnalysis(
     console.log(m);
   };
   const generatedAt = new Date();
+  const dataHealth: DataHealth = {
+    expected: WATCHLIST.length, analyzed: 0,
+    latestBarDates: Object.fromEntries(WATCHLIST.map((stock) => [stock.symbol, null])),
+    missingSymbols: [], failures: {}, warnings: [],
+  };
   const historicalForecasts = new Map<string, HistoricalForecast>();
   let events: HistoricalEvent[] = [];
   const eventStore = new DocumentStore(join(process.cwd(), 'reports', 'state.sqlite'));
@@ -96,6 +113,7 @@ export async function runAnalysis(
 
   log("📰 מושך כתבות מהעיתונות הכלכלית...");
   const allNews = await fetchAllNews();
+  if (!allNews.length) dataHealth.warnings.push("לא התקבלו חדשות; שכבת החדשות חסרה.");
   log(`   נמצאו ${allNews.length} כתבות.`);
 
   const results: AnalysisResult[] = [];
@@ -111,14 +129,17 @@ export async function runAnalysis(
   const historyDays = PARAMS.historyDaysWeekly;
 
   log("📊 מושך מדדי ייחוס לחישוב חוזק יחסי ומצב שוק...");
-  const benchIsrael = await fetchBenchmark(BENCHMARKS.israel, historyDays, log);
-  const benchWorld = await fetchBenchmark(BENCHMARKS.world, historyDays, log);
+  const benchIsrael = await fetchBenchmark(BENCHMARKS.israel, historyDays, log, dataHealth);
+  const benchWorld = await fetchBenchmark(BENCHMARKS.world, historyDays, log, dataHealth);
   if (benchIsrael) log(`   ✅ ${benchIsrael.name} (${benchIsrael.symbol})`);
   if (benchWorld) log(`   ✅ ${benchWorld.name} (${benchWorld.symbol})`);
 
   for (const stock of WATCHLIST) {
     try {
       const daily = await fetchCandles(stock.symbol, historyDays);
+      recordDailyBarDate(dataHealth, stock.symbol, daily);
+      const lastClose = daily.at(-1)?.close;
+      if (lastClose != null && Number.isFinite(lastClose) && lastClose > 0) extraPrices.set(stock.symbol, lastClose);
       const candles = mode === "weekly" ? resampleWeekly(daily) : daily;
       const news = matchNewsForStock(allNews, stock.name);
       newsByStock.set(stock.symbol, news);
@@ -147,6 +168,7 @@ export async function runAnalysis(
       if (daily.length) closesBySymbol.set(stock.symbol, daily.map((c) => c.close));
       if (result) {
         results.push(result);
+        dataHealth.analyzed = results.length;
 
         if (mode === "daily") {
           // אופק שבועי: אותו מנוע על נרות שבועיים; אופק ארוך: SMA200/מומנטום/שיא 52 שב'
@@ -170,15 +192,20 @@ export async function runAnalysis(
 
         log(`   ✅ ${stock.name} (${stock.symbol}): ${result.recommendation} | ציון ${result.score}`);
       } else {
-        const lastClose = daily.length ? daily[daily.length - 1].close : null;
-        if (lastClose != null) extraPrices.set(stock.symbol, lastClose);
+        dataHealth.failures[stock.symbol] = "אין מספיק נתונים לניתוח";
         log(`   ⚠️  ${stock.name} (${stock.symbol}): אין מספיק נתונים.`);
       }
     } catch (err) {
+      dataHealth.failures[stock.symbol] = (err as Error).message;
       log(`   ❌ ${stock.name} (${stock.symbol}): שגיאה — ${(err as Error).message}`);
     }
     await sleep(300);
   }
+
+  const analyzedSymbols = new Set(results.map((result) => result.symbol));
+  dataHealth.missingSymbols = WATCHLIST.filter((stock) => !analyzedSymbols.has(stock.symbol)).map((stock) => stock.symbol);
+  if (!results.length) throw new Error("אין תוצאות ניתוח; הדוח וההיסטוריה הקודמים נשמרו");
+  if (dataHealth.missingSymbols.length) log(`איסוף חלקי: נותחו ${dataHealth.analyzed} מתוך ${dataHealth.expected} מניות.`);
 
   // מצב שוק ורוחב שוק — מסנן-על להמלצות
   let regime: MarketRegime | null = null;
@@ -209,11 +236,21 @@ export async function runAnalysis(
   }
 
   const indices = await analyzeWorldIndices(mode, onProgress);
+  const analyzedIndices = new Set(indices.map((index) => index.symbol));
+  for (const index of WORLD_INDICES) {
+    if (!analyzedIndices.has(index.symbol)) {
+      dataHealth.latestBarDates[index.symbol] ??= null;
+      dataHealth.warnings.push(`אין ניתוח מדד ${index.symbol}; נתונים חסרים או היסטוריה קצרה.`);
+    }
+  }
   for (const index of indices) {
     try {
       const candles = await fetchCandles(index.symbol, historyDays);
+      recordDailyBarDate(dataHealth, index.symbol, candles);
       historicalForecasts.set(index.symbol, historicalForecast({ symbol: index.symbol, candles, asOf: generatedAt, events }));
     } catch (error) {
+      dataHealth.latestBarDates[index.symbol] ??= null;
+      dataHealth.warnings.push(`היסטוריה חסרה למדד ${index.symbol}: ${(error as Error).message}`);
       log(`   היסטוריה חסרה למדד ${index.symbol}: ${(error as Error).message}`);
     }
   }
@@ -223,12 +260,20 @@ export async function runAnalysis(
   if (invHoldings.length) {
     log(`💹 מושך מחירי קרנות סל מ-investing.com (${invHoldings.length} ניירות)...`);
     for (const h of invHoldings) {
-      const price = await fetchInvestingPrice(h.investingUrl!);
-      if (price != null) {
-        extraPrices.set(h.name, price);
-        log(`   ✅ ${h.name}: ${price.toLocaleString("he-IL")}`);
-      } else {
-        log(`   ⚠️  ${h.name}: לא התקבל מחיר מ-investing.com.`);
+      const identifier = h.taseNumber ?? h.name;
+      dataHealth.warnings.push(`${identifier}: מחיר בלבד, ללא ניתוח טכני; זמן הציטוט אינו מסופק.`);
+      try {
+        const price = await fetchInvestingPrice(h.investingUrl!);
+        if (price != null && Number.isFinite(price) && price > 0) {
+          extraPrices.set(h.name, price);
+          log(`   ✅ ${h.name}: ${price.toLocaleString("he-IL")}`);
+        } else {
+          dataHealth.failures[identifier] = "לא התקבל מחיר מ-investing.com";
+          log(`   ⚠️  ${h.name}: לא התקבל מחיר מ-investing.com.`);
+        }
+      } catch (error) {
+        dataHealth.failures[identifier] = (error as Error).message;
+        log(`   ⚠️  ${h.name}: ${(error as Error).message}`);
       }
       await sleep(400);
     }
@@ -241,13 +286,23 @@ export async function runAnalysis(
     if (!h.symbol || (!h.taseNumber && !h.investingUrl)) continue;
     const r = bySymbol.get(h.symbol);
     if (!r) continue;
-    const second = h.investingUrl
-      ? await fetchInvestingPrice(h.investingUrl)
-      : await fetchTasePrice(h.taseNumber!);
-    if (second == null) continue;
+    let second: number | null;
+    try {
+      second = h.investingUrl
+        ? await fetchInvestingPrice(h.investingUrl)
+        : await fetchTasePrice(h.taseNumber!);
+    } catch (error) {
+      dataHealth.warnings.push(`${h.symbol}: אימות מחיר ממקור שני נכשל: ${(error as Error).message}`);
+      continue;
+    }
+    if (second == null || !Number.isFinite(second) || second <= 0) {
+      dataHealth.warnings.push(`${h.symbol}: אין אימות מחיר ממקור שני.`);
+      continue;
+    }
     const deviationPct = ((r.price - second) / second) * 100;
     priceChecks.push({ symbol: h.symbol, name: h.name, yahoo: r.price, tase: second, deviationPct });
     if (Math.abs(deviationPct) > PRICE_DEVIATION_WARN_PCT) {
+      dataHealth.warnings.push(`${h.symbol}: פער מחיר ${deviationPct.toFixed(1)}% מול המקור השני; לאמת לפני פעולה.`);
       log(`   ⚠️  ${h.name}: פער מחיר ${deviationPct.toFixed(1)}% מול המקור השני (${second.toLocaleString("he-IL")}).`);
     }
     await sleep(300);
@@ -275,6 +330,7 @@ export async function runAnalysis(
     priceChecks,
     sparkCloses,
     historicalForecasts,
+    dataHealth,
   });
   log(`📄 הדוח נוצר בהצלחה: ${reportPath}`);
 
@@ -289,5 +345,6 @@ export async function runAnalysis(
     regime,
     correlations,
     priceChecks,
+    dataHealth,
   };
 }
