@@ -24,6 +24,7 @@ const allModes: ReportMode[] = ["daily", "weekly"];
 const digestLimit = 64_000;
 const responseLimit = 128_000;
 const narrativeLimit = 12_000;
+const deliveryAssets = ["app.js", "report-view.js", "service-worker.js", "manifest.webmanifest", "assets/icon-192.png", "assets/icon-512.png"] as const;
 const statePath = (root: string) => join(root, ".cache", "automation-run.json");
 const digestPath = (root: string, mode: ReportMode) => join(root, "reports", `latest-${mode}.txt`);
 const aiPath = (root: string, mode: ReportMode) => join(root, "reports", `latest-${mode}-ai.txt`);
@@ -84,6 +85,27 @@ async function readDigest(root: string, mode: ReportMode): Promise<string> {
   const text = await readFile(file, "utf8");
   if (!text.trim()) throw new Error("Empty digest");
   return text;
+}
+
+async function assertRegularProjectFile(root: string, relative: string): Promise<void> {
+  const parts = relative.split("/");
+  let current = root;
+  for (let index = 0; index < parts.length; index++) {
+    current = join(current, parts[index]);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`Required delivery file is missing: ${relative}`);
+      }
+      throw error;
+    }
+    if (info.isSymbolicLink()) throw new Error(`Required delivery file cannot be a symbolic link: ${relative}`);
+    const last = index === parts.length - 1;
+    if (!last && !info.isDirectory()) throw new Error(`Required delivery path is not a directory: ${relative}`);
+    if (last && !info.isFile()) throw new Error(`Required delivery file is not a regular file: ${relative}`);
+  }
 }
 
 async function freshDigest(root: string, state: RunState | undefined, mode: ReportMode): Promise<string | undefined> {
@@ -212,12 +234,17 @@ export async function assembleSite(root: string, env: FormEnvironment): Promise<
   const site = join(root, "_site");
   await mkdir(site);
   await mkdir(join(site, "reports"));
+  await mkdir(join(site, "assets"), { recursive: true });
   const state = await readState(root, env.AUTOMATION_RUN_ID);
   const index = join(root, "index.html");
   try {
     const info = await lstat(index);
     if (info.isFile() && !info.isSymbolicLink()) await copyFile(index, join(site, "index.html"));
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  for (const asset of deliveryAssets) {
+    await assertRegularProjectFile(root, asset);
+    await copyFile(join(root, asset), join(site, asset));
+  }
   const entries = await readdir(join(root, "reports"), { withFileTypes: true }).catch(error => {
     if (error.code === "ENOENT") return [];
     throw error;

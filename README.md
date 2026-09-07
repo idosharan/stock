@@ -177,7 +177,7 @@ npm run storage:maintain
 
 ```powershell
 npm run storage:maintain
-npm run upload:prepare -- --output github-upload-2026-09-07
+npm run upload:prepare -- --output github-upload-2026-09-07-pwa
 ```
 
 ברירת המחדל ללא `--output` היא `github-upload`. מותר רק שם בשורש: `github-upload` או
@@ -187,7 +187,9 @@ npm run upload:prepare -- --output github-upload-2026-09-07
 
 הרשימה המותרת: שבעת קובצי השורש ([package.json](package.json), [package-lock.json](package-lock.json),
 [tsconfig.json](tsconfig.json), [README.md](README.md), [index.html](index.html), [.gitignore](.gitignore),
-[.gitattributes](.gitattributes)); קובצי TypeScript ב-`src` וב-`tests`; כלי `.mjs`/`.ts` ב-`tools`;
+[.gitattributes](.gitattributes)); ששת נכסי הלקוח החיוניים [app.js](app.js), [report-view.js](report-view.js),
+[service-worker.js](service-worker.js), [manifest.webmanifest](manifest.webmanifest), [assets/icon-192.png](assets/icon-192.png),
+[assets/icon-512.png](assets/icon-512.png); קובצי TypeScript ב-`src` וב-`tests`; כלי `.mjs`/`.ts` ב-`tools`;
 YAML תחת `.github/workflows`; [data/instruments.json](data/instruments.json) **חובה**;
 דוחות HTML מתוארכים, [reports/state.sqlite](reports/state.sqlite), ועד ארבעה תקצירים קבועים בשורש `reports`:
 `latest-daily.txt`, `latest-weekly.txt`, `latest-daily-ai.txt`, `latest-weekly-ai.txt`, אם כבר נוצרו.
@@ -197,8 +199,9 @@ YAML תחת `.github/workflows`; [data/instruments.json](data/instruments.json) 
 
 נבדקים **עד 100 קבצים ועד 25 MiB לקובץ** לפני ההעתקה וגם גודל התוצאה לאחריה.
 העתקות רגילות מאומתות ב-SHA-256, ומסד ההיסטוריה מיוצא כתמונת SQLite עקבית עם בדיקת תקינות וקריאה חוזרת.
-לפי מבנה הפרויקט ב-7.9.2026: 20 מקור + 10 בדיקות + 6 כלים + workflow אחד + 7 שורש + קובץ נתונים אחד +
-מסד אחד + 30 דוחות = 76; עם שני תקצירים 78, ועם ארבעה **80 קבצים**. תוספת קוד עתידית צורכת מהמרווח.
+לפי מבנה הפרויקט ב-7.9.2026: 20 מקור + 10 בדיקות + 6 כלים + workflow אחד + 7 שורש + 6 נכסי לקוח + קובץ נתונים אחד +
+מסד אחד + 30 דוחות = 82; עם שני תקצירים 84, ועם ארבעה **86 קבצים**. תוספת קוד עתידית צורכת מהמרווח,
+והמערכת בודקת בפועל שהתוצאה נשארת לכל היותר 100 קבצים.
 שמירת 30 דוחות מגבילה את מספרם, לא את גודל מסד הארכיון: אם SQLite גדל מעל 25 MiB ההכנה תיעצר;
 אין למחוק היסטוריה כדי לעקוף את הבדיקה, ונדרשת החלטת אחסון/מסירה נפרדת.
 
@@ -206,6 +209,17 @@ YAML תחת `.github/workflows`; [data/instruments.json](data/instruments.json) 
 2. הציגו קבצים מוסתרים בסייר. בוררי קבצים/גרירה עשויים להשמיט שמות שמתחילים בנקודה: בדקו במפורש את `.github/workflows/reports.yml`, `.gitignore` ו-`.gitattributes` לפני סיום ההעלאה. אל תעלו ZIP בציפייה ש-GitHub יחלץ אותו.
 3. אם `.github` לא נקלטה, השתמשו ב-**Add file > Create new file** עם השם המלא `.github/workflows/reports.yml` ותוכן הקובץ המקורי; כך נוצרת ההיררכיה. העלו/צרו גם את שני קובצי הנקודה בשורש. העלאת `reports.yml` לשורש לא מפעילה Actions.
 4. ודאו ש-[package.json](package.json) ו-[data/instruments.json](data/instruments.json) בנתיבים המדויקים ושכל התיקיות נשמרו. השלימו את השינוי בענף ברירת המחדל, דרך PR אם נדרש. דפדפן אינו מחיל כללי `.gitattributes`; אין להסתמך עליו להמרת סיומות שורה. [מגבלות ההעלאה הרשמיות](https://docs.github.com/en/repositories/working-with-files/managing-files/adding-a-file-to-a-repository).
+
+### התקנה מהאתר
+
+לאחר העלאת החבילה למאגר [https://github.com/idosharan/stock](https://github.com/idosharan/stock) והפעלת Pages,
+כתובת ההתקנה המיועדת היא `https://idosharan.github.io/stock/`.
+
+1. פתחו את הכתובת ב-Chrome ב-Android.
+2. בחרו בתפריט הדפדפן **הוספה למסך הבית** או **Install app**. בתוך האתר יש מדריך הפעלה מובנה.
+3. האפליקציה נפתחת בחלון עצמאי. היא עובדת במצב רשת בלבד: אין שמירת דוחות לאופליין ואין הבטחת נתונים בזמן אמת.
+4. התצוגה הקומפקטית היא ברירת המחדל ושומרת על תקציר, התראות ותיק. לפתיחת כל הסעיפים או להדפסה מלאה השתמשו בפקדי ההרחבה/הדפסה בתוך האתר.
+5. אימות GitHub נדרש רק לפעולות הניהול וה-CRUD דרך Actions. אין כאן מסחר, הוראות קנייה/מכירה או טופס ציבורי לנתונים פרטיים.
 
 ### הפעלת Actions
 
@@ -269,7 +283,8 @@ YAML תחת `.github/workflows`; [data/instruments.json](data/instruments.json) 
 
 קישורי הניהול נוצרים לפי `GITHUB_REPOSITORY` (מסופק אוטומטית ב-CI) או זיהוי כתובת Pages תקינה.
 הם מפנים לטופס Actions המחייב הרשאות, לא לשרת נסתר או לממשק ציבורי לכתיבת התיק.
-נכון ל-7.9.2026 אין remote מוגדר בסביבת העבודה ואין כתובת מאגר/אתר פעילה ידועה;
+נכון ל-7.9.2026 אין remote מוגדר בסביבת העבודה המקומית, אך היעד המיועד הוא המאגר `idosharan/stock`
+וכתובת Pages המיועדת היא `https://idosharan.github.io/stock/` לאחר העלאה ופרסום;
 הרשאות החשבון, הגנת הענף, איסוף נתונים ב-Actions ופריסת Pages בפועל טרם אומתו.
 
 ## Google AI אופציונלי

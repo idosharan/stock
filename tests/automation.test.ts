@@ -7,6 +7,15 @@ import { spawnSync } from "node:child_process";
 import { loadInstrumentConfig, type InstrumentConfig } from "../src/instruments.js";
 import { parse } from "yaml";
 
+const deliveryAssets = [
+  "app.js",
+  "report-view.js",
+  "service-worker.js",
+  "manifest.webmanifest",
+  "assets/icon-192.png",
+  "assets/icon-512.png",
+] as const;
+
 const project = resolve(import.meta.dirname, "..");
 const fixture: InstrumentConfig = {
   version: 1,
@@ -241,16 +250,38 @@ test("site artifact whitelists reports and summaries, labels retained files and 
   const { assembleSite } = await import("../tools/automation.js");
   await temporary(async root => {
     await mkdir(join(root, "reports"));
+    await mkdir(join(root, "assets"));
     await writeFile(join(root, "index.html"), "<html>index</html>");
+    for (const asset of deliveryAssets) {
+      await mkdir(join(root, asset, ".."), { recursive: true });
+      await writeFile(join(root, asset), `asset:${asset}`);
+    }
     for (const name of ["report-daily-2026-09-01.html", "backtest-2026-09-01.html", "latest-daily.txt", "latest-daily-ai.txt", "state.sqlite", "secret.txt", "not-a-report.html"]) {
       await writeFile(join(root, "reports", name), name);
     }
     await assembleSite(root, { AUTOMATION_RUN_ID: "new", WORKFLOW_STATUS: "failure" });
     assert.deepEqual((await readdir(join(root, "_site", "reports"))).sort(), ["backtest-2026-09-01.html", "latest-daily.txt", "report-daily-2026-09-01.html"]);
+    for (const asset of deliveryAssets) {
+      assert.equal(await readFile(join(root, "_site", asset), "utf8"), `asset:${asset}`);
+    }
     const status = await readFile(join(root, "_site", "run-status.txt"), "utf8");
     assert.match(status, /failure/i);
     assert.match(status, /retained|previous/i);
     assert.match(status, /public repositories/i);
+  });
+});
+
+test("site artifact rejects missing or symlinked required PWA assets", async () => {
+  const { assembleSite } = await import("../tools/automation.js");
+  await temporary(async root => {
+    await mkdir(join(root, "reports"));
+    await mkdir(join(root, "assets"));
+    await writeFile(join(root, "index.html"), "<html>index</html>");
+    for (const asset of deliveryAssets.filter(asset => asset !== "assets/icon-512.png")) {
+      await mkdir(join(root, asset, ".."), { recursive: true });
+      await writeFile(join(root, asset), `asset:${asset}`);
+    }
+    await assert.rejects(assembleSite(root, { AUTOMATION_RUN_ID: "new" }), /assets\/icon-512\.png|assets\\icon-512\.png/);
   });
 });
 

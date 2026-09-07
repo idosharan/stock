@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, access, truncate } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, access, truncate, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -12,11 +12,12 @@ const script = fileURLToPath(new URL('../tools/prepare-upload.mjs', import.meta.
 const maintenance = fileURLToPath(new URL('../tools/storage-maintenance.ts', import.meta.url));
 const loader = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
 const required = ['package.json', 'package-lock.json', 'tsconfig.json', 'README.md', 'index.html', '.gitignore', '.gitattributes', '.github/workflows/reports.yml', 'data/instruments.json'];
+const deliveryAssets = ['app.js', 'report-view.js', 'service-worker.js', 'manifest.webmanifest', 'assets/icon-192.png', 'assets/icon-512.png'];
 const summaries = ['latest-daily.txt', 'latest-weekly.txt', 'latest-daily-ai.txt', 'latest-weekly-ai.txt'];
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'tase-upload-'));
-  for (const file of [...required, 'src/index.ts', 'tests/example.test.ts', 'tools/report-summary.mjs', 'reports/report-daily-2026-09-06.html',
+  for (const file of [...required, ...deliveryAssets, 'src/index.ts', 'tests/example.test.ts', 'tools/report-summary.mjs', 'reports/report-daily-2026-09-06.html',
     'node_modules/dependency/index.js', 'node_modules - Copy/dependency/index.js', '.cache/candles.sqlite', '.cache/automation-state.json', '.git/config', '.vscode/settings.json', '.env', 'daily-run.log',
     '_site/index.html', '_site/reports/latest-daily.txt', 'github-upload-old/src/private.ts', 'data/private.json', 'docs/private.md']) {
     await mkdir(join(root, file, '..'), { recursive: true });
@@ -46,8 +47,9 @@ test('upload folder contains only runnable project files and a readable history 
   try {
     execFileSync(process.execPath, [script, '--root', root], { encoding: 'utf8', stdio: 'pipe' });
     const output = join(root, 'github-upload');
-    assert.deepEqual(await filesAt(output), [...required, 'src/index.ts', 'tests/example.test.ts', 'tools/report-summary.mjs', 'reports/report-daily-2026-09-06.html', 'reports/state.sqlite'].sort());
+    assert.deepEqual(await filesAt(output), [...required, ...deliveryAssets, 'src/index.ts', 'tests/example.test.ts', 'tools/report-summary.mjs', 'reports/report-daily-2026-09-06.html', 'reports/state.sqlite'].sort());
     assert.equal(await readFile(join(output, 'src/index.ts'), 'utf8'), 'fixture: src/index.ts');
+    for (const asset of deliveryAssets) assert.equal(await readFile(join(output, asset), 'utf8'), `fixture: ${asset}`);
     const snapshot = new DatabaseSync(join(output, 'reports/state.sqlite'), { readOnly: true });
     try { assert.equal(snapshot.prepare('SELECT value FROM documents WHERE key = ?').get('pick-history').value, '{"preserved":true}'); }
     finally { snapshot.close(); }
@@ -111,6 +113,33 @@ test('instrument data is mandatory and failure leaves no export', async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('required PWA assets are mandatory and missing ones fail before export creation', async () => {
+  const root = await fixture();
+  try {
+    await rm(join(root, 'assets/icon-512.png'));
+    assert.throws(() => execFileSync(process.execPath, [script, '--root', root], { stdio: 'pipe' }), /assets[\\/]icon-512\.png/);
+    await assert.rejects(access(join(root, 'github-upload')), { code: 'ENOENT' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('symlinked asset parent is rejected and never followed into the export', async context => {
+  const root = await fixture();
+  try {
+    await rm(join(root, 'assets'), { recursive: true, force: true });
+    try {
+      await symlink(join(root, 'reports'), join(root, 'assets'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+        context.skip('Creating symlinks is not permitted in this environment.');
+        return;
+      }
+      throw error;
+    }
+    assert.throws(() => execFileSync(process.execPath, [script, '--root', root], { stdio: 'pipe' }), /symbolic link: assets/i);
+    await assert.rejects(access(join(root, 'github-upload')), { code: 'ENOENT' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('only the four fixed root report summaries are exported when present', async () => {
   const root = await fixture();
   try {
@@ -131,7 +160,7 @@ test('100 files are allowed including summaries, but 101 fail before copying', a
   const root = await fixture();
   try {
     for (const name of summaries) await writeFile(join(root, 'reports', name), 'summary');
-    for (let index = 0; index < 82; index++) await writeFile(join(root, `src/extra-${index}.ts`), 'export {};');
+    for (let index = 0; index < 76; index++) await writeFile(join(root, `src/extra-${index}.ts`), 'export {};');
     execFileSync(process.execPath, [script, '--root', root], { stdio: 'pipe' });
     assert.equal((await filesAt(join(root, 'github-upload'))).length, 100);
     await writeFile(join(root, 'src/overflow.ts'), 'export {};');
@@ -203,6 +232,6 @@ test('current project paths plus 30 retained reports and all four summaries fit 
     assert.equal(exported.filter(name => /^reports\/report-.*\.html$/.test(name)).length, 30);
     assert.equal(exported.filter(name => /^reports\/latest-.*\.txt$/.test(name)).length, 4);
     assert.ok(exported.length <= 100, `Steady-state upload exceeds 100 files: ${exported.length}`);
-    context.diagnostic(JSON.stringify({ ...counts, root: 7, data: 1, state: 1, reports: 30, summaries: 4, total: exported.length }));
+    context.diagnostic(JSON.stringify({ ...counts, root: 7, data: 1, assets: 6, state: 1, reports: 30, summaries: 4, total: exported.length }));
   } finally { await rm(root, { recursive: true, force: true }); }
 });

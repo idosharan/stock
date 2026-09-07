@@ -98,6 +98,42 @@ test("index protects embedded report data and resets an empty tab", () => {
   assert.match(html, /date\.textContent = fmtDate/);
 });
 
+test("index adds install assets and an in-site Hebrew management guide without moving the inline script", () => {
+  const html = buildIndexHtml([{ mode: "daily", date: "2026-09-07", file: "reports/report-daily-2026-09-07.html" }]);
+  assert.match(html, /<link rel="manifest" href="\.\/manifest\.webmanifest"/);
+  assert.match(html, /<meta name="theme-color" content="#23734e"/);
+  assert.match(html, /id="install-app"/);
+  assert.match(html, /id="app-help"/);
+  assert.match(html, /id="open-app-help"/);
+  assert.match(html, /id="close-app-help"/);
+  assert.match(html, /id="help-management"/);
+  assert.match(html, /id="app-status"/);
+  assert.match(html, /Chrome ב-Android/);
+  assert.match(html, /Actions > Manage & Build Reports > Run workflow/);
+  assert.match(html, /portfolio/);
+  assert.match(html, /watchlist/);
+  assert.match(html, /action/);
+  assert.match(html, /mode/);
+  assert.match(html, /target/);
+  assert.match(html, /identifier/);
+  assert.match(html, /name/);
+  assert.match(html, /entry_price/);
+  assert.match(html, /sector/);
+  assert.match(html, /investing_url/);
+  assert.match(html, /alert_below/);
+  assert.match(html, /trigger_index/);
+  assert.match(html, /שדה ריק פירושו ללא שינוי/);
+  assert.match(html, /'-' מנקה שדה אופציונלי/);
+  assert.match(html, /latest-daily\.txt/);
+  assert.match(html, /latest-weekly\.txt/);
+  assert.match(html, /UTC/);
+  assert.match(html, /שעון ישראל/);
+  const inlineIndex = html.indexOf("<script>\nconst REPORTS =");
+  const externalIndex = html.indexOf('<script src="./app.js" defer></script>');
+  assert.ok(inlineIndex >= 0, "Inline index script must remain first for existing extraction tests");
+  assert.ok(externalIndex > inlineIndex, "External app script must load after the inline script");
+});
+
 test("summary accepts a stdin fixture and labels combined ranking with sortable headings", () => {
   const fixture = `<html><section><h2>התיק שלי</h2><table><tbody><tr><td>PORTFOLIO</td></tr></tbody></table></section>
     <section><h2>טבלת המלצות מלאה</h2><table id="ranking-table"><thead><tr><th><button>משולב</button></th></tr></thead>

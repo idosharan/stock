@@ -16,11 +16,47 @@ const root = resolve(values.root);
 const destination = join(root, values.output);
 const maxFiles = 100;
 const maxBytes = 25 * 1024 * 1024;
-const files = ['package.json', 'package-lock.json', 'tsconfig.json', 'README.md', 'index.html', '.gitignore', '.gitattributes', 'data/instruments.json'];
+const files = [
+  'package.json',
+  'package-lock.json',
+  'tsconfig.json',
+  'README.md',
+  'index.html',
+  '.gitignore',
+  '.gitattributes',
+  'data/instruments.json',
+  'app.js',
+  'report-view.js',
+  'service-worker.js',
+  'manifest.webmanifest',
+  'assets/icon-192.png',
+  'assets/icon-512.png',
+];
+
+async function assertRegularFile(relative, missingLabel = 'Required upload file is missing') {
+  const parts = relative.split('/');
+  let current = root;
+  for (let index = 0; index < parts.length; index++) {
+    current = join(current, parts[index]);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      if (error.code === 'ENOENT') throw new Error(`${missingLabel}: ${relative}`);
+      throw error;
+    }
+    if (info.isSymbolicLink()) throw new Error(`Upload cannot contain a symbolic link: ${relative}`);
+    const last = index === parts.length - 1;
+    if (!last && !info.isDirectory()) throw new Error(`Upload path must stay within regular directories: ${relative}`);
+    if (last && !info.isFile()) throw new Error(`Expected regular file: ${relative}`);
+  }
+}
 
 async function collect(directory, allowed) {
   const location = join(root, directory);
-  if (!(await lstat(location)).isDirectory()) throw new Error(`Expected directory: ${directory}`);
+  const info = await lstat(location);
+  if (info.isSymbolicLink()) throw new Error(`Upload cannot contain a symbolic link: ${directory}`);
+  if (!info.isDirectory()) throw new Error(`Expected directory: ${directory}`);
   for (const entry of await readdir(location, { withFileTypes: true })) {
     const relative = `${directory}/${entry.name}`;
     if (entry.isSymbolicLink()) throw new Error(`Upload cannot contain a symbolic link: ${relative}`);
@@ -37,13 +73,15 @@ await collect('reports', (name, relative) => /^(?:report-(?:daily|weekly)|backte
   || relative === 'reports/state.sqlite'
   || (relative === `reports/${name}` && /^latest-(?:daily|weekly)(?:-ai)?\.txt$/.test(name)));
 
+for (const required of files.slice(0, 14)) await assertRegularFile(required);
 for (const required of ['.github/workflows/reports.yml', 'src/index.ts', 'tools/report-summary.mjs', 'reports/state.sqlite']) {
   if (!files.includes(required)) throw new Error(`Required upload file is missing: ${required}`);
+  await assertRegularFile(required);
 }
 if (files.length > maxFiles) throw new Error(`Upload has ${files.length} files; maximum is ${maxFiles}. Run npm run storage:maintain first.`);
 for (const relative of files) {
+  await assertRegularFile(relative);
   const info = await lstat(join(root, relative));
-  if (!info.isFile()) throw new Error(`Expected regular file: ${relative}`);
   if (info.size > maxBytes) throw new Error(`File exceeds GitHub's 25 MB browser limit: ${relative}`);
 }
 try { await mkdir(destination); }

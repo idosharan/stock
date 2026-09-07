@@ -18,6 +18,14 @@ import type { AnalysisResult } from "./analysis.js";
 import type { StockNews } from "./news.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
+const staticAssets = new Map<string, { file: string; type: string; cache: string }>([
+  ["/app.js", { file: "app.js", type: "text/javascript; charset=utf-8", cache: "public, max-age=3600" }],
+  ["/report-view.js", { file: "report-view.js", type: "text/javascript; charset=utf-8", cache: "public, max-age=3600" }],
+  ["/service-worker.js", { file: "service-worker.js", type: "text/javascript; charset=utf-8", cache: "no-store" }],
+  ["/manifest.webmanifest", { file: "manifest.webmanifest", type: "application/manifest+json; charset=utf-8", cache: "public, max-age=3600" }],
+  ["/assets/icon-192.png", { file: "assets/icon-192.png", type: "image/png", cache: "public, max-age=3600" }],
+  ["/assets/icon-512.png", { file: "assets/icon-512.png", type: "image/png", cache: "public, max-age=3600" }],
+]);
 
 // מונע הרצות במקביל (Yahoo מגביל קצב).
 let running = false;
@@ -80,18 +88,51 @@ function toApi(
   };
 }
 
+async function serveStaticAsset(pathname: string, method: string | undefined, res: import("node:http").ServerResponse): Promise<boolean> {
+  const asset = staticAssets.get(pathname);
+  if (!asset) return false;
+  if (method !== "GET" && method !== "HEAD") {
+    res.writeHead(405, { Allow: "GET, HEAD" });
+    res.end();
+    return true;
+  }
+  try {
+    const content = await readFile(asset.file);
+    res.writeHead(200, { "Content-Type": asset.type, "Cache-Control": asset.cache });
+    if (method === "HEAD") {
+      res.end();
+      return true;
+    }
+    res.end(content);
+  } catch {
+    res.writeHead(404);
+    res.end("Not found");
+  }
+  return true;
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+
+  if (await serveStaticAsset(url.pathname, req.method, res)) return;
 
   // עמוד הבית — מגיש את לוח הבקרה (index.html) שנבנה עם כפתורי ההרצה.
   if (url.pathname === "/" || url.pathname === "/index.html") {
     try {
       const dash = await readFile("index.html", "utf8");
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
       res.end(dash);
     } catch {
       // אם עדיין לא הופק דוח כלשהו, אין index.html — מציגים דף ברירת מחדל.
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
       res.end(HTML_PAGE);
     }
     return;

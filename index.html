@@ -3,8 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#23734e" />
 <title>דוחות ניתוח טכני — בורסת ת"א</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap" />
+<link rel="manifest" href="./manifest.webmanifest" />
 <style>
 
 :root{--bg:#f0f2f4;--card:#fff;--ink:#24272c;--muted:#626870;--line:#d9dde2;
@@ -22,6 +24,7 @@ button{touch-action:manipulation}
 bdi,.num,.score,.delta,.idx-price,.idx-score,.pl,.metrics strong,.risk-box strong,.regime-metrics strong,.d{font-variant-numeric:tabular-nums}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
+html,body{max-width:100%;overflow-x:hidden}
 body{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh}
 .sidebar{display:flex;flex-direction:column;gap:16px;padding:24px 16px 16px;height:100dvh;position:sticky;top:0;min-width:0;background:var(--soft);border-inline-end:1px solid var(--line);border-top:4px solid var(--ink)}
 .brand{padding-bottom:16px;border-bottom:1px solid var(--line)}.brand-market{font-size:11px;font-weight:700;color:var(--muted)}
@@ -36,6 +39,9 @@ body{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh}
 .run-daily{background:var(--ink);color:#fff;border-color:var(--ink)}.run-btn:hover:not(:disabled){border-color:var(--muted)}.run-btn:disabled{opacity:.5;cursor:wait}
 .run-status{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.run-status:empty{display:none}
 .run-status.busy{color:var(--hold)}.run-status.ok{color:var(--buy)}.run-status.err{color:var(--sell)}
+.app-actions{display:flex;flex-wrap:wrap;gap:8px}.app-btn{min-height:40px;padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--ink);font-size:13px;font-weight:600;cursor:pointer}
+.install-btn{background:var(--buy);border-color:var(--buy);color:#fff}.help-btn:hover,.close-btn:hover,.app-btn:hover{border-color:var(--muted)}
+.app-status{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.app-status[data-state="ready"]{color:var(--buy)}.app-status[data-state="warn"]{color:var(--hold)}.app-status[data-state="error"]{color:var(--sell)}
 .archive-heading{margin:0;font-size:12px;font-weight:500;color:var(--muted)}
 .report-list{display:flex;flex-direction:column;gap:4px;flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable}
 .report-item{display:flex;align-items:center;gap:8px;width:100%;text-align:right;min-height:44px;flex-shrink:0;padding:8px 10px;border:1px solid transparent;border-inline-start:3px solid transparent;border-radius:3px;background:transparent;color:var(--ink);font-size:13px;cursor:pointer}
@@ -48,7 +54,14 @@ body{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh}
 .viewer iframe{width:100%;height:100%;min-width:0;min-height:0;border:none;display:block;background:var(--card)}
 .empty-state{display:flex;align-items:center;justify-content:center;color:var(--muted);min-height:0;background:repeating-linear-gradient(0deg,var(--soft),var(--soft) 39px,var(--line) 40px)}
 .empty-state p{font-size:16px;background:var(--card);padding:12px 24px}
-@media(max-width:760px){body{display:block}.sidebar{position:static;height:auto;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 16px;padding:12px;border-inline-end:0;border-bottom:1px solid var(--line)}.brand{padding:0;border:0}.brand h1{font-size:17px;margin:2px 0 0}.brand-market{font-size:10px}.toggle{width:140px;align-self:center}.run-box{grid-column:1/-1;display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px 16px;padding-bottom:8px}.manage-link{min-height:36px;font-size:12px;gap:16px}.run-btn{font-size:12px;min-height:36px}.run-status{width:100%}.archive-heading,.side-foot{display:none}.report-list{grid-column:1/-1;flex-direction:row;max-width:100%;overflow-x:auto;scrollbar-gutter:auto;padding-bottom:4px}.report-item{width:154px;min-height:40px;gap:6px}.viewer{height:calc(100dvh - 210px);min-height:480px;grid-template-rows:44px minmax(0,1fr)}.viewer-header{padding:8px 12px}}
+.app-dialog{inline-size:min(880px,calc(100vw - 24px));max-inline-size:calc(100vw - 24px);padding:0;border:0;border-radius:18px;background:var(--card);color:var(--ink)}
+.app-dialog::backdrop{background:rgb(36 39 44 / 0.42)}.app-dialog-shell{display:flex;flex-direction:column;max-block-size:min(82dvh,860px);min-width:0}
+.app-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 20px 16px;border-bottom:1px solid var(--line);background:linear-gradient(135deg,#f4f5f7,#eaf4ee)}
+.app-dialog-kicker{margin:0 0 4px;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.04em}.app-dialog-head h2{margin:0;font-size:21px}
+.app-dialog-body{display:grid;gap:16px;padding:0 20px 20px;overflow:auto;overscroll-behavior:contain}.help-section{padding-top:16px;border-top:1px solid var(--line)}.help-section:first-child{border-top:0}
+.help-section h3,.help-section h4{margin:0 0 8px}.help-section p{margin:0 0 10px;font-size:13px;overflow-wrap:anywhere}.help-management{display:inline-flex;align-items:center;gap:8px;min-height:40px;font-size:13px;font-weight:600}
+.help-fields,.help-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px}.help-fields article,.help-grid article{min-width:0;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}
+@media(max-width:760px){body{display:block}.sidebar{position:static;height:auto;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 16px;padding:12px;border-inline-end:0;border-bottom:1px solid var(--line)}.brand{padding:0;border:0}.brand h1{font-size:17px;margin:2px 0 0}.brand-market{font-size:10px}.toggle{width:140px;align-self:center}.run-box{grid-column:1/-1;display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:8px 16px;padding-bottom:8px}.manage-link{min-height:36px;font-size:12px;gap:16px}.run-btn,.app-btn{font-size:12px;min-height:36px}.run-status,.app-status{width:100%}.archive-heading,.side-foot{display:none}.report-list{grid-column:1/-1;flex-direction:row;max-width:100%;overflow-x:auto;scrollbar-gutter:auto;padding-bottom:4px}.report-item{width:154px;min-height:40px;gap:6px}.viewer{height:calc(100dvh - 260px);min-height:480px;grid-template-rows:44px minmax(0,1fr)}.viewer-header{padding:8px 12px}.app-dialog{inline-size:min(calc(100vw - 12px),880px);max-inline-size:calc(100vw - 12px)}.app-dialog-head,.app-dialog-body{padding-inline:14px}.help-fields,.help-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:360px){.sidebar{column-gap:8px}.toggle{width:120px}.brand h1{font-size:16px}.brand-market{font-size:9px}}
 @media print{body{display:block}.sidebar,.viewer-header{display:none}.viewer{display:block;height:auto}.viewer iframe{height:100vh}.empty-state{height:auto}}
 </style>
@@ -72,6 +85,11 @@ body{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh}
     <button id="run-daily" class="run-btn run-daily" hidden onclick="runReport('daily')">הפקת דוח יומי</button>
     <button id="run-weekly" class="run-btn run-weekly" hidden onclick="runReport('weekly')">הפקת דוח שבועי</button>
     <div id="run-status" class="run-status" role="status" aria-live="polite"></div>
+    <div class="app-actions">
+      <button id="install-app" class="app-btn install-btn" type="button" hidden>התקנת האפליקציה</button>
+      <button id="open-app-help" class="app-btn help-btn" type="button">מדריך התקנה וניהול</button>
+    </div>
+    <div id="app-status" class="app-status" role="status" aria-live="polite">להתקנה ב-Chrome ב-Android פתחו את המדריך. ההתקנה תלויה בחיבור מאובטח ובהודעת הדפדפן.</div>
   </div>
 
   <h2 class="archive-heading">ארכיון דוחות</h2>
@@ -86,6 +104,73 @@ body{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh}
   </div>
   <iframe id="frame" title="דוח" style="display:none"></iframe>
 </main>
+
+<dialog id="app-help" class="app-dialog" aria-labelledby="app-help-title">
+  <div class="app-dialog-shell">
+    <header class="app-dialog-head">
+      <div>
+        <p class="app-dialog-kicker">PWA ל-Android</p>
+        <h2 id="app-help-title">מדריך התקנה וניהול מתוך האתר</h2>
+      </div>
+      <button id="close-app-help" class="app-btn close-btn" type="button">סגירה</button>
+    </header>
+    <div class="app-dialog-body">
+      <section class="help-section">
+        <h3>התקנה והפעלה ראשונה</h3>
+        <p>ב-Chrome ב-Android פתחו את האתר דרך כתובת HTTPS, לחצו על כפתור ההתקנה אם הדפדפן מציע אותו, או פתחו את תפריט Chrome ובחרו "הוספה למסך הבית" או "התקנת אפליקציה". לאחר ההתקנה האפליקציה נפתחת בחלון עצמאי, אך עדיין קוראת את הדוחות מהרשת ואינה שומרת עותק לא מקוון של דוח ישן.</p>
+        <p>ב-GitHub היכנסו לחשבון עם הרשאת כתיבה למאגר ובחרו Actions > Manage & Build Reports > Run workflow, בענף main. מומלץ תחילה action=list כדי לבדוק את התצורה, אחריו action=report עם mode=daily, weekly או both. אפשר להמשיך להשתמש באתר גם בלי התקנה.</p>
+        <p><a id="help-management" class="help-management" hidden target="_blank" rel="noopener noreferrer">פתיחת טופס הניהול ב-GitHub <span aria-hidden="true">↗</span></a></p>
+      </section>
+
+      <section class="help-section">
+        <h3>עשרת שדות הטופס</h3>
+        <div class="help-fields">
+          <article><h4>action</h4><p>report להפקה, list להצגת התצורה, add להוספה, update לעדכון, remove להסרה.</p></article>
+          <article><h4>mode</h4><p>daily, weekly או both עבור report. ב-list אין הפקה חדשה. add, update ו-remove מפיקים דוח יומי אוטומטית.</p></article>
+          <article><h4>target</h4><p>portfolio להחזקות או watchlist לרשימת מעקב. list מציג את הכול.</p></article>
+          <article><h4>identifier</h4><p>סימול Yahoo שבדקתם כמו DSCT.TA או HPQ, או מספר ת"א בן 5-10 ספרות להחזקת מחיר בלבד. אימות הפורמט אינו אימות אוטומטי של הבורסה או המטבע.</p></article>
+          <article><h4>name</h4><p>חובה ב-add. ב-update שדה ריק פירושו ללא שינוי, ולא מנקים את השם עם '-'.</p></article>
+          <article><h4>entry_price</h4><p>חובה בהוספת portfolio. ת"א באגורות ולא בשקלים, ונכסים אמריקאיים ב-USD בלבד. שדה ריק שומר ערך קיים ו-'-' אינו חוקי כאן.</p></article>
+          <article><h4>sector</h4><p>שדה אופציונלי לתיק או למעקב. שדה ריק משאיר ערך קיים, ו-'-' מנקה שדה אופציונלי.</p></article>
+          <article><h4>investing_url</h4><p>בתיק בלבד: קישור Investing תקין ל-etfs או equities, בלי query או fragment. נדרש למספר ת"א ללא סימול Yahoo.</p></article>
+          <article><h4>alert_below</h4><p>בתיק בלבד: מחיר התראה חיובי באותן יחידות כמו entry_price. שדה ריק שומר, ו-'-' מנקה בעדכון.</p></article>
+          <article><h4>trigger_index</h4><p>בתיק בלבד: מדד נתמך כמו ^NDX או TA35.TA. שדה ריק שומר, ו-'-' מנקה בעדכון תקין.</p></article>
+        </div>
+      </section>
+
+      <section class="help-section help-grid">
+        <article>
+          <h3>ניהול רשומות</h3>
+          <p>add אינו upsert ודוחה רשומה קיימת. update ו-remove דורשים רשומה שכבר קיימת. בהסרה ממלאים רק target ו-identifier ומשאירים את שדות התוכן ריקים. הסרה מהתיק אינה הוראת מכירה, והסרה מהתיק גם אינה מסירה אוטומטית מה-watchlist.</p>
+          <p>לדוגמה, הוספה למעקב: action=add, target=watchlist, identifier=MSFT, name=Microsoft. הוספה לתיק: target=portfolio ובנוסף entry_price עם מחיר הקנייה שלכם. בדקו ב-list שאין כבר רשומה.</p>
+          <p>עדכון הקרן הקיימת: action=update, target=portfolio, identifier=1145903, entry_price=4502. אלה 4,502 אגורות, כלומר 45.02 ש"ח ליחידה. אין צורך להוסיף אותה שוב.</p>
+        </article>
+        <article>
+          <h3>תיק מול מעקב</h3>
+          <p>portfolio מיועד להחזקות עם entry_price, alert_below ו-trigger_index לפי הצורך. watchlist מיועד למעקב בלבד. החזקת Yahoo מצטרפת גם למעקב, ולכן אי אפשר להסיר אותה מה-watchlist כל עוד היא עדיין מוחזקת בתיק.</p>
+        </article>
+        <article>
+          <h3>מזהים ויחידות</h3>
+          <p>נתמכות מניות ת"א עם ‎.TA ומניות או ETF אמריקאיים עם סימול לטיני פשוט. אין תמיכה כללית במדדים שמתחילים ב-^ כמזהי החזקה, במט"ח עם = או בבורסות אחרות. מספר ת"א תקף אינו מבטיח ציון טכני מלא אלא רק מסלול מחיר בלבד כשאין היסטוריית Yahoo.</p>
+        </article>
+        <article>
+          <h3>תזמון ותוצרים</h3>
+          <p>היומי רץ ב-21:37 UTC בימי שני עד שישי, והשבועי ב-21:47 UTC ביום שישי. ההמרה לשעון ישראל משתנה עם שעון קיץ וחורף. בתוצרי Actions אפשר להוריד latest-daily.txt, latest-weekly.txt, דוחות HTML ו-run-status.txt מתוך ה-artifact.</p>
+        </article>
+        <article>
+          <h3>מסלול עבודה ותקלות</h3>
+          <p>המסלול הרגיל הוא list לבדיקת מצב, אחריו add, update או remove לפי הצורך. השינוי שומר את התצורה ומנסה להפיק דוח יומי; כשל באיסוף אינו מבטל את שינוי התצורה. אין צורך בהרצת report נוספת מיד אחריו. בודקים את סטטוס ההרצה ותאריכי הנתונים.</p>
+          <p>אם Manage & Build Reports אינו מופיע, ודאו שהקובץ נמצא בנתיב .github/workflows/reports.yml בענף main, ולא בתור reports.yml בשורש המאגר. לפרסום אוטומטי ב-Pages דרושים Source: GitHub Actions והמשתנה PUBLISH_PAGES=true. GitHub עשוי לעכב הפקות מתוזמנות.</p>
+          <p>בסיום הרצה פותחים את Summary ב-Actions לסיכום, או מורידים את חבילת ה-Artifacts ומחלצים את כולה. את index.html פותחים לצד תיקיית reports ושאר קובצי האתר. מחירים אינם נתוני זמן אמת.</p>
+        </article>
+        <article>
+          <h3>פרטיות ומגבלות</h3>
+          <p>האתר וההתקנה אינם הופכים מידע לציבורי או לפרטי יותר ממצב האירוח הקיים. אין להזין סודות, מפתחות API או פרטי כניסה בטופס. הדוחות והתקצירים אינם ייעוץ השקעות, והמערכת אינה מבצעת קנייה או מכירה בפועל.</p>
+        </article>
+      </section>
+    </div>
+  </div>
+</dialog>
 
 <script>
 const REPORTS = [{"mode":"daily","date":"2026-08-18","file":"reports/report-daily-2026-08-18.html"},{"mode":"daily","date":"2026-08-19","file":"reports/report-daily-2026-08-19.html"},{"mode":"daily","date":"2026-08-20","file":"reports/report-daily-2026-08-20.html"},{"mode":"daily","date":"2026-08-30","file":"reports/report-daily-2026-08-30.html"},{"mode":"daily","date":"2026-08-31","file":"reports/report-daily-2026-08-31.html"},{"mode":"daily","date":"2026-09-01","file":"reports/report-daily-2026-09-01.html"},{"mode":"daily","date":"2026-09-02","file":"reports/report-daily-2026-09-02.html"},{"mode":"daily","date":"2026-09-03","file":"reports/report-daily-2026-09-03.html"},{"mode":"daily","date":"2026-09-06","file":"reports/report-daily-2026-09-06.html"},{"mode":"daily","date":"2026-09-07","file":"reports/report-daily-2026-09-07.html"}];
@@ -224,5 +309,7 @@ async function runReport(mode) {
 
 renderList();
 </script>
+<script src="./app.js" defer></script>
+<script src="./report-view.js" defer></script>
 </body>
 </html>
