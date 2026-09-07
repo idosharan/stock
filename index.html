@@ -68,7 +68,7 @@ body{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh}
   </div>
 
   <div class="run-box">
-    <a id="manage-reports" class="manage-link" hidden target="_blank" rel="noopener noreferrer">ניהול והפקת דוח <span aria-hidden="true">↗</span></a>
+    <a id="manage-reports" class="manage-link" href="https://github.com/idosharan/stock/actions/workflows/reports.yml" target="_blank" rel="noopener noreferrer">ניהול והפקת דוח <span aria-hidden="true">↗</span></a>
     <button id="run-daily" class="run-btn run-daily" hidden onclick="runReport('daily')">הפקת דוח יומי</button>
     <button id="run-weekly" class="run-btn run-weekly" hidden onclick="runReport('weekly')">הפקת דוח שבועי</button>
     <div id="run-status" class="run-status" role="status" aria-live="polite"></div>
@@ -89,7 +89,7 @@ body{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh}
 
 <script>
 const REPORTS = [{"mode":"daily","date":"2026-08-18","file":"reports/report-daily-2026-08-18.html"},{"mode":"daily","date":"2026-08-19","file":"reports/report-daily-2026-08-19.html"},{"mode":"daily","date":"2026-08-20","file":"reports/report-daily-2026-08-20.html"},{"mode":"daily","date":"2026-08-30","file":"reports/report-daily-2026-08-30.html"},{"mode":"daily","date":"2026-08-31","file":"reports/report-daily-2026-08-31.html"},{"mode":"daily","date":"2026-09-01","file":"reports/report-daily-2026-09-01.html"},{"mode":"daily","date":"2026-09-02","file":"reports/report-daily-2026-09-02.html"},{"mode":"daily","date":"2026-09-03","file":"reports/report-daily-2026-09-03.html"},{"mode":"daily","date":"2026-09-06","file":"reports/report-daily-2026-09-06.html"},{"mode":"daily","date":"2026-09-07","file":"reports/report-daily-2026-09-07.html"}];
-const CONFIGURED_WORKFLOW = "";
+const CONFIGURED_WORKFLOW = "https://github.com/idosharan/stock/actions/workflows/reports.yml";
 const repositoryPattern = new RegExp("^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$");
 const isLocal = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname) && ['http:', 'https:'].includes(location.protocol);
 let currentMode = 'daily';
