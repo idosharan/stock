@@ -187,8 +187,14 @@ test("Gemini is opt-in and fails closed without configuration or when TLS is dis
   assert.equal(calls, 0);
 });
 
-test("Gemini uses configured official REST endpoint, header, timeout and digest-only payload", async () => {
+test("Gemini uses configured official REST endpoint, header, timeout and digest-only payload", async context => {
   const { requestNarrative } = await import("../tools/automation.js");
+  const deadlines: number[] = [];
+  const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+  context.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+    deadlines.push(milliseconds);
+    return originalTimeout(milliseconds);
+  });
   let requestBody: Record<string, any> | undefined;
   const fetcher: typeof fetch = async (input, init) => {
     assert.equal(String(input), "https://generativelanguage.googleapis.com/v1beta/models/configured-model:generateContent");
@@ -204,10 +210,52 @@ test("Gemini uses configured official REST endpoint, header, timeout and digest-
   }, fetcher);
   assert.match(result!, /AI narrative/);
   assert.match(result!, /Bounded narrative/);
+  assert.deepEqual(deadlines, [60_000]);
+  assert.deepEqual(requestBody?.generationConfig, { maxOutputTokens: 1600, temperature: 0.2 });
   assert.equal(requestBody?.tools, undefined);
   assert.match(JSON.stringify(requestBody?.systemInstruction), /untrusted|instructions/i);
   assert.match(JSON.stringify(requestBody?.contents), /digest data/);
   assert.doesNotMatch(JSON.stringify(requestBody), /test-secret/);
+});
+
+test("Gemini deadline allows slower responses but aborts stalled requests and response reads", async context => {
+  const { requestNarrative } = await import("../tools/automation.js");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  context.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("private timeout detail", "TimeoutError")), milliseconds);
+    return controller.signal;
+  });
+  const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_API_KEY: "test-secret", GEMINI_MODEL: "configured-model" };
+  const slowResult = requestNarrative("daily", "digest", env, async (_input, init) => new Promise<Response>((resolve, reject) => {
+    init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+    setTimeout(() => resolve(Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "Slower summary" }] } }] })), 30_000);
+  }));
+  context.mock.timers.tick(30_000);
+  assert.match((await slowResult)!, /Slower summary/);
+
+  for (const phase of ["request", "body"]) {
+    const diagnostics: string[] = [];
+    let signal: AbortSignal | undefined;
+    const result = requestNarrative("daily", "digest", env, async (_input, init) => {
+      signal = init!.signal!;
+      if (phase === "request") return new Promise<Response>((_resolve, reject) => {
+        signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+      });
+      return new Response(new ReadableStream({
+        start(controller) {
+          signal!.addEventListener("abort", () => controller.error(signal!.reason), { once: true });
+        },
+      }));
+    }, code => { diagnostics.push(code); });
+    await Promise.resolve();
+    context.mock.timers.tick(59_999);
+    assert.equal(signal!.aborted, false, phase);
+    context.mock.timers.tick(1);
+    assert.equal(await result, undefined, phase);
+    assert.equal(signal!.aborted, true, phase);
+    assert.deepEqual(diagnostics, ["timeout"], phase);
+  }
 });
 
 test("Gemini errors, blocked or oversized output return deterministic fallback without leaking bodies", async () => {
@@ -278,6 +326,7 @@ test("Gemini diagnostics distinguish failures in Actions Summary without exposin
       const text = await readFile(summary, "utf8");
       assert.match(text, new RegExp(`Gemini diagnostic: ${scenario.code}\\.`));
       const diagnostic = text.split("\n").find(line => line.includes("Gemini diagnostic:"))!;
+      if (scenario.code === "timeout") assert.match(diagnostic, /deadline is 60 seconds/);
       assert.doesNotMatch(diagnostic, /private portfolio fixture|test-secret-never-log|provider-private-message|UNRECOGNIZED_PRIVATE_REASON/);
       assert.doesNotMatch(text, /test-secret-never-log|provider-private-message|UNRECOGNIZED_PRIVATE_REASON|old AI/);
       assert.match(text, /deterministic digest remains authoritative/);
