@@ -226,6 +226,89 @@ test("Gemini errors, blocked or oversized output return deterministic fallback w
   assert.equal(calls, 0);
 });
 
+test("Gemini diagnostics distinguish failures in Actions Summary without exposing provider data", async () => {
+  const { generateReports, finalizeReports } = await import("../tools/automation.js");
+  await temporary(async root => {
+    const digest = "private portfolio fixture";
+    await generateReports(root, ["daily"], "diagnostic-run", async () => {
+      await writeFile(join(root, "reports", "latest-daily.txt"), digest);
+      return 0;
+    });
+    const summary = join(root, "summary.md");
+    const env = {
+      AUTOMATION_RUN_ID: "diagnostic-run", GITHUB_STEP_SUMMARY: summary,
+      SEND_REPORT_TO_GEMINI: "true", GEMINI_API_KEY: "test-secret-never-log",
+      GEMINI_MODEL: "configured-model",
+    };
+    const providerText = "provider-private-message test-secret-never-log";
+    const cases: { code: string; env?: Record<string, string>; fetcher: typeof fetch; calls: number }[] = [
+      { code: "disabled", env: { SEND_REPORT_TO_GEMINI: "false" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
+      { code: "missing_key", env: { GEMINI_API_KEY: "" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
+      { code: "missing_model", env: { GEMINI_MODEL: "" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
+      { code: "invalid_model", env: { GEMINI_MODEL: "models/configured-model" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
+      { code: "insecure_tls", env: { NODE_TLS_REJECT_UNAUTHORIZED: "0" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
+      ...[400, 401, 403, 404, 408, 429, 503, 418].map(status => ({
+        code: status === 503 ? "http_5xx" : status === 418 ? "http_error" : `http_${status}`,
+        calls: 1, fetcher: async () => new Response(providerText, { status }),
+      })),
+      { code: "timeout", calls: 1, fetcher: async () => { throw new DOMException(providerText, "TimeoutError"); } },
+      { code: "timeout", calls: 1, fetcher: async () => { throw new DOMException(providerText, "AbortError"); } },
+      { code: "network_error", calls: 1, fetcher: async () => { throw new Error(providerText); } },
+      { code: "invalid_response", calls: 1, fetcher: async () => new Response(providerText) },
+      { code: "invalid_response", calls: 1, fetcher: async () => new Response("null") },
+      { code: "empty_response", calls: 1, fetcher: async () => new Response(null) },
+      { code: "response_too_large", calls: 1, fetcher: async () => new Response("x".repeat(128_001)) },
+      { code: "blocked", calls: 1, fetcher: async () => Response.json({ promptFeedback: { blockReason: "SAFETY", extra: providerText } }) },
+      ...["MAX_TOKENS", "SAFETY", "UNRECOGNIZED_PRIVATE_REASON"].map(finishReason => ({
+        code: finishReason === "MAX_TOKENS" ? "max_tokens" : finishReason === "SAFETY" ? "blocked" : "incomplete_response",
+        calls: 1, fetcher: async () => Response.json({ candidates: [{ finishReason, content: { parts: [{ text: providerText }] } }] }),
+      })),
+      { code: "empty_output", calls: 1, fetcher: async () => Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: providerText, thought: true }] } }] }) },
+      { code: "unsafe_output", calls: 1, fetcher: async () => Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: providerText }] } }] }) },
+      { code: "output_too_large", calls: 1, fetcher: async () => Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "x".repeat(12_001) }] } }] }) },
+    ];
+    for (const scenario of cases) {
+      await writeFile(summary, "");
+      await writeFile(join(root, "reports", "latest-daily-ai.txt"), "old AI");
+      let calls = 0;
+      await finalizeReports(root, { ...env, ...scenario.env }, async (input, init) => {
+        calls++;
+        return scenario.fetcher(input, init);
+      });
+      const text = await readFile(summary, "utf8");
+      assert.match(text, new RegExp(`Gemini diagnostic: ${scenario.code}\\.`));
+      const diagnostic = text.split("\n").find(line => line.includes("Gemini diagnostic:"))!;
+      assert.doesNotMatch(diagnostic, /private portfolio fixture|test-secret-never-log|provider-private-message|UNRECOGNIZED_PRIVATE_REASON/);
+      assert.doesNotMatch(text, /test-secret-never-log|provider-private-message|UNRECOGNIZED_PRIVATE_REASON|old AI/);
+      assert.match(text, /deterministic digest remains authoritative/);
+      assert.equal(calls, scenario.calls, scenario.code);
+      assert.equal(await readFile(join(root, "reports", "latest-daily.txt"), "utf8"), digest);
+      await assert.rejects(readFile(join(root, "reports", "latest-daily-ai.txt")), { code: "ENOENT" });
+    }
+  });
+});
+
+test("Gemini diagnostics preserve digest limits and stay silent for successful narratives", async () => {
+  const { requestNarrative } = await import("../tools/automation.js");
+  const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_API_KEY: "test-secret", GEMINI_MODEL: "configured-model" };
+  const diagnostics: string[] = [];
+  let calls = 0;
+  const fetcher: typeof fetch = async () => {
+    calls++;
+    return Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "Summary" }] } }] });
+  };
+  for (const [digest, expected] of [[" \n", "empty_digest"], ["x".repeat(64_001), "digest_too_large"]]) {
+    diagnostics.length = 0;
+    assert.equal(await requestNarrative("daily", digest, env, fetcher, code => { diagnostics.push(code); }), undefined);
+    assert.deepEqual(diagnostics, [expected]);
+  }
+  assert.equal(calls, 0);
+  diagnostics.length = 0;
+  assert.match((await requestNarrative("daily", "valid digest", env, fetcher, code => { diagnostics.push(code); }))!, /Summary/);
+  assert.deepEqual(diagnostics, []);
+  assert.equal(calls, 1);
+});
+
 test("finalization writes both fresh AI narratives and removes them on later opt-out or failure", async () => {
   const { generateReports, finalizeReports } = await import("../tools/automation.js");
   await temporary(async root => {
@@ -240,6 +323,7 @@ test("finalization writes both fresh AI narratives and removes them on later opt
     const summary = await readFile(env.GITHUB_STEP_SUMMARY, "utf8");
     assert.match(summary, /fresh daily/);
     assert.match(summary, /fresh weekly/);
+    assert.doesNotMatch(summary, /Gemini diagnostic:/);
     await finalizeReports(root, env, async () => { throw new Error("test-secret"); });
     for (const mode of ["daily", "weekly"]) await assert.rejects(readFile(join(root, "reports", `latest-${mode}-ai.txt`)), { code: "ENOENT" });
     await finalizeReports(root, { ...env, SEND_REPORT_TO_GEMINI: "false" });
