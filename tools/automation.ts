@@ -143,8 +143,42 @@ export async function generateReports(root: string, modes: ReportMode[], runId: 
   return state;
 }
 
+const narrativeDiagnostics = {
+  disabled: "Set the Actions variable SEND_REPORT_TO_GEMINI to exactly true to opt in.",
+  missing_key: "GEMINI_API_KEY is missing or blank in this job. Check the repository Actions secret and workflow secret mapping.",
+  missing_model: "Set the Actions variable GEMINI_MODEL to the API model identifier.",
+  invalid_model: "GEMINI_MODEL has an invalid format. Use an identifier without models/, quotes or whitespace.",
+  insecure_tls: "Request blocked because TLS verification is disabled. Restore certificate verification; do not bypass it.",
+  empty_digest: "No non-empty digest was supplied; nothing was sent to Google.",
+  digest_too_large: "The digest exceeds the 64000-byte input limit; nothing was sent to Google.",
+  http_400: "HTTP 400: Google rejected the request. Check model/API compatibility, request settings and API key configuration.",
+  http_401: "HTTP 401: authentication was rejected. Check the API key in the repository secret.",
+  http_403: "HTTP 403: access was denied. Check key restrictions, project permissions, API availability and region eligibility.",
+  http_404: "HTTP 404: the requested resource was not found. Check the model identifier and generateContent availability for this project.",
+  http_408: "HTTP 408: Google reported a request timeout. Retry in a later run.",
+  http_429: "HTTP 429: rate or quota limit. Check Gemini API project usage, quota and billing separately from a consumer subscription.",
+  http_5xx: "HTTP 5xx: Google returned a server error. Retry in a later run or check provider status.",
+  http_error: "Google returned another unsuccessful HTTP status. No provider body is logged.",
+  timeout: "The request or response read timed out or was aborted. The current request deadline is 20 seconds.",
+  network_error: "The request or response transfer failed. Check network access and trusted TLS certificates; no raw exception is logged.",
+  empty_response: "Google returned no response body.",
+  response_too_large: "The response exceeded the 128000-byte safety limit and was rejected.",
+  invalid_response: "The response was not valid JSON or did not contain the expected generateContent structure.",
+  blocked: "Google reported a blocked prompt or output; no blocked text is shown.",
+  max_tokens: "Google reported MAX_TOKENS. Output was incomplete at the current 1600-token limit; partial text was not published.",
+  incomplete_response: "Google did not return a completed STOP candidate. Partial output was not published.",
+  empty_output: "The completed response had no non-empty visible text after excluding thinking content.",
+  unsafe_output: "Output failed the secret-safety check and was not published.",
+  output_too_large: "The narrative exceeded the 12000-character limit and was not published.",
+} as const;
+type NarrativeFailure = keyof typeof narrativeDiagnostics;
+
+class NarrativeResponseError extends Error {
+  constructor(readonly code: "empty_response" | "response_too_large") { super(code); }
+}
+
 async function boundedResponse(response: Response): Promise<string> {
-  if (!response.body) throw new Error("Empty response");
+  if (!response.body) throw new NarrativeResponseError("empty_response");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -153,7 +187,7 @@ async function boundedResponse(response: Response): Promise<string> {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > responseLimit) throw new Error("Response too large");
+      if (size > responseLimit) throw new NarrativeResponseError("response_too_large");
       chunks.push(value);
     }
     return Buffer.concat(chunks).toString("utf8");
@@ -163,12 +197,23 @@ async function boundedResponse(response: Response): Promise<string> {
   }
 }
 
-export async function requestNarrative(mode: ReportMode, digest: string, env: FormEnvironment, fetcher: typeof fetch = fetch): Promise<string | undefined> {
+export async function requestNarrative(
+  mode: ReportMode, digest: string, env: FormEnvironment, fetcher: typeof fetch = fetch,
+  onFailure?: (code: NarrativeFailure) => void,
+): Promise<string | undefined> {
+  const fail = (code: NarrativeFailure): undefined => {
+    onFailure?.(code);
+    return undefined;
+  };
   const key = env.GEMINI_API_KEY;
   const model = env.GEMINI_MODEL;
-  if (env.SEND_REPORT_TO_GEMINI !== "true" || !key || !model || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(model)
-    || env.NODE_TLS_REJECT_UNAUTHORIZED === "0" || process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0"
-    || !digest.trim() || Buffer.byteLength(digest, "utf8") > digestLimit) return undefined;
+  if (env.SEND_REPORT_TO_GEMINI !== "true") return fail("disabled");
+  if (!key?.trim()) return fail("missing_key");
+  if (!model?.trim()) return fail("missing_model");
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(model)) return fail("invalid_model");
+  if (env.NODE_TLS_REJECT_UNAUTHORIZED === "0" || process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") return fail("insecure_tls");
+  if (!digest.trim()) return fail("empty_digest");
+  if (Buffer.byteLength(digest, "utf8") > digestLimit) return fail("digest_too_large");
   try {
     const response = await fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(20_000),
@@ -181,16 +226,37 @@ export async function requestNarrative(mode: ReportMode, digest: string, env: Fo
     });
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      return undefined;
+      switch (response.status) {
+        case 400: return fail("http_400");
+        case 401: return fail("http_401");
+        case 403: return fail("http_403");
+        case 404: return fail("http_404");
+        case 408: return fail("http_408");
+        case 429: return fail("http_429");
+        default: return fail(response.status >= 500 && response.status <= 599 ? "http_5xx" : "http_error");
+      }
     }
     const payload = JSON.parse(await boundedResponse(response));
+    if (!payload || typeof payload !== "object") return fail("invalid_response");
+    if (typeof payload.promptFeedback?.blockReason === "string"
+      && payload.promptFeedback.blockReason !== "BLOCK_REASON_UNSPECIFIED" && payload.promptFeedback.blockReason) return fail("blocked");
     const candidate = payload.candidates?.[0];
-    if (candidate?.finishReason !== "STOP" || !Array.isArray(candidate.content?.parts)) return undefined;
-    const text = candidate.content.parts.filter((part: { text?: unknown; thought?: boolean }) => typeof part.text === "string" && !part.thought)
+    if (candidate?.finishReason === "MAX_TOKENS") return fail("max_tokens");
+    if (["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY"].includes(candidate?.finishReason)) return fail("blocked");
+    if (candidate?.finishReason !== "STOP") return fail("incomplete_response");
+    if (!Array.isArray(candidate.content?.parts)) return fail("invalid_response");
+    const text = candidate.content.parts.filter((part: { text?: unknown; thought?: boolean } | null) => part && typeof part.text === "string" && !part.thought)
       .map((part: { text: string }) => part.text).join("\n").trim();
-    if (!text || text.includes(key) || text.length > narrativeLimit) return undefined;
+    if (!text) return fail("empty_output");
+    if (text.includes(key)) return fail("unsafe_output");
+    if (text.length > narrativeLimit) return fail("output_too_large");
     return `AI narrative (Gemini; ${mode}; unverified interpretation, not the deterministic report)\n${text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")}\n`;
-  } catch { return undefined; }
+  } catch (error) {
+    if (error instanceof NarrativeResponseError) return fail(error.code);
+    if (error instanceof SyntaxError) return fail("invalid_response");
+    if (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)) return fail("timeout");
+    return fail("network_error");
+  }
 }
 
 function statusText(state: RunState | undefined, env: FormEnvironment): string {
@@ -216,13 +282,14 @@ export async function finalizeReports(root: string, env: FormEnvironment, fetche
       continue;
     }
     summary += plainTextBlock(`Fresh ${mode} digest\n${digest}`);
-    const narrative = await requestNarrative(mode, digest, env, fetcher);
+    let failure: NarrativeFailure = "incomplete_response";
+    const narrative = await requestNarrative(mode, digest, env, fetcher, code => { failure = code; });
     if (narrative) {
       await writeFile(aiPath(root, mode), narrative, "utf8");
       state!.aiModes.push(mode);
       summary += plainTextBlock(narrative);
     } else {
-      summary += plainTextBlock(`${mode}: AI narrative disabled or unavailable; deterministic digest remains authoritative.`);
+      summary += plainTextBlock(`${mode}: AI narrative disabled or unavailable; deterministic digest remains authoritative.\nGemini diagnostic: ${failure}. ${narrativeDiagnostics[failure]}`);
     }
   }
   if (state) await saveState(root, state);
