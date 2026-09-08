@@ -70,7 +70,8 @@ async function httpFetch(url: string, init?: RequestInit): Promise<Response> {
 /** בדיקת קישוריות ותעודות לפני שאר הבקשות (נקראת בתחילת הריצה). */
 export async function ensureTls(): Promise<void> {
   try {
-    await httpFetch(`${CHART_HOSTS[0]}/v1/test/getcrumb`, { headers: { "User-Agent": UA } });
+    const response = await httpFetch(`${CHART_HOSTS[0]}/v1/test/getcrumb`, { headers: { "User-Agent": UA } });
+    await response.body?.cancel().catch(() => undefined);
   } catch {
     /* כשל רשת רגיל — יטופל בבקשות עצמן */
   }
@@ -117,6 +118,7 @@ async function ensureSession(): Promise<{ cookie: string; crumb: string }> {
       });
       const setCookie = res.headers.get("set-cookie");
       if (setCookie) cookie = setCookie.split(";")[0];
+      await res.body?.cancel().catch(() => undefined);
     } catch (err) {
       console.warn(`   ⚠️  כשל בהשגת עוגייה: ${(err as Error).message} — ממשיך ללא עוגייה.`);
     }
@@ -169,6 +171,7 @@ async function fetchChartJson(symbol: string, days: number): Promise<any> {
       const res = await httpFetch(url, {
         headers: { "User-Agent": UA, ...(useCookie ? { Cookie: useCookie } : {}) },
       });
+      if (!res.ok) await res.body?.cancel().catch(() => undefined);
       if (res.status === 401 || res.status === 403) {
         // crumb/עוגייה פגו — איפוס וניסיון מחדש
         cachedCookie = null;
@@ -206,7 +209,10 @@ export async function fetchInvestingPrice(url: string): Promise<number | null> {
           "Accept-Language": "en-US,en;q=0.9",
         },
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
+        continue;
+      }
       const html = await res.text();
       const m = html.match(/data-test="instrument-price-last"[^>]*>([\d.,]+)</);
       if (m) {
@@ -235,6 +241,7 @@ export async function fetchQuoteSummary(symbol: string, modules: string[]): Prom
       const res = await httpFetch(url, {
         headers: { "User-Agent": UA, ...(useCookie ? { Cookie: useCookie } : {}) },
       });
+      if (!res.ok) await res.body?.cancel().catch(() => undefined);
       if (res.status === 401 || res.status === 403) {
         cachedCookie = null;
         cachedCrumb = null;
@@ -396,7 +403,10 @@ export async function fetchTasePrice(securityNumber: string): Promise<number | n
           "Accept-Language": "he-IL,he;q=0.9,en;q=0.8",
         },
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
+        continue;
+      }
       const text = await res.text();
       // מבנה JSON של mayaapi או ערכי שער בתוך עמוד ה-HTML
       const m =
