@@ -8,6 +8,7 @@ import { fetchCandles, resampleWeekly } from "./data.js";
 import type { Candle } from "./data.js";
 import { sma, rsi, macd, adx, roc, atr, bollinger, analyzeSequences } from "./indicators.js";
 import type { Mode } from "./report.js";
+import { CollectionBudget } from "./collection-budget.js";
 
 export type MarketStance =
   | "חיובי חזק"
@@ -247,7 +248,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** מושך ומנתח את כל מדדי העולם המוגדרים. */
 export async function analyzeWorldIndices(
   mode: Mode = "daily",
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  collection = new CollectionBudget(label => console.warn(`Index collection timed out: ${label}`))
 ): Promise<IndexAnalysis[]> {
   const log = (m: string) => {
     onProgress?.(m);
@@ -257,8 +259,9 @@ export async function analyzeWorldIndices(
   log(`🌍 מנתח ${WORLD_INDICES.length} מדדי עולם (ארה"ב / ישראל / אירופה / אסיה)...`);
   const out: IndexAnalysis[] = [];
   for (const def of WORLD_INDICES) {
+    if (collection.expired) break;
     try {
-      const daily = await fetchCandles(def.symbol, historyDays);
+      const daily = await collection.run(def.symbol, () => fetchCandles(def.symbol, historyDays), []);
       const candles = mode === "weekly" ? resampleWeekly(daily) : daily;
       const res = analyzeIndex(def, candles);
       if (res) {
@@ -270,7 +273,7 @@ export async function analyzeWorldIndices(
     } catch (err) {
       log(`   ❌ ${def.name} (${def.symbol}): שגיאה — ${(err as Error).message}`);
     }
-    await sleep(250);
+    if (!collection.expired) await sleep(250);
   }
   return out;
 }

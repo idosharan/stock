@@ -21,6 +21,7 @@ import { historicalForecast, validateEvents, type HistoricalForecast, type Histo
 import { DocumentStore } from "./storage.js";
 import { join } from "node:path";
 import type { DataHealth } from "./summary.js";
+import { CollectionBudget } from "./collection-budget.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -65,12 +66,13 @@ async function fetchBenchmark(
   def: { symbol: string; fallback: string; name: string },
   days: number,
   log: (m: string) => void,
-  health: DataHealth
+  health: DataHealth,
+  collection: CollectionBudget
 ): Promise<{ symbol: string; name: string; closes: number[]; candles: Awaited<ReturnType<typeof fetchCandles>> } | null> {
   for (const sym of [def.symbol, def.fallback]) {
     health.latestBarDates[sym] = null;
     try {
-      const candles = await fetchCandles(sym, days);
+      const candles = await collection.run(`${sym}:benchmark`, () => fetchCandles(sym, days), []);
       recordDailyBarDate(health, sym, candles);
       if (candles.length > 60) {
         return { symbol: sym, name: def.name, closes: candles.map((c) => c.close), candles };
@@ -101,6 +103,10 @@ export async function runAnalysis(
     latestBarDates: Object.fromEntries(WATCHLIST.map((stock) => [stock.symbol, null])),
     missingSymbols: [], failures: {}, warnings: [],
   };
+  const collection = new CollectionBudget(label => {
+    dataHealth.failures[label] = "מקור הנתונים דולג בגלל מגבלת זמן; הדוח כולל רק נתונים שהתקבלו.";
+    log(`איסוף חלקי: ${label} - מגבלת זמן; ממשיך עם הנתונים הזמינים.`);
+  });
   const historicalForecasts = new Map<string, HistoricalForecast>();
   let events: HistoricalEvent[] = [];
   const eventStore = new DocumentStore(join(process.cwd(), 'reports', 'state.sqlite'));
@@ -109,10 +115,10 @@ export async function runAnalysis(
   } finally { eventStore.close(); }
   log(`▶️  מריץ ניתוח (${mode}) עבור ${WATCHLIST.length} מניות...`);
 
-  await ensureTls();
+  await collection.run("connectivity", ensureTls, undefined);
 
   log("📰 מושך כתבות מהעיתונות הכלכלית...");
-  const allNews = await fetchAllNews();
+  const allNews = await collection.run("news", fetchAllNews, []);
   if (!allNews.length) dataHealth.warnings.push("לא התקבלו חדשות; שכבת החדשות חסרה.");
   log(`   נמצאו ${allNews.length} כתבות.`);
 
@@ -129,21 +135,22 @@ export async function runAnalysis(
   const historyDays = PARAMS.historyDaysWeekly;
 
   log("📊 מושך מדדי ייחוס לחישוב חוזק יחסי ומצב שוק...");
-  const benchIsrael = await fetchBenchmark(BENCHMARKS.israel, historyDays, log, dataHealth);
-  const benchWorld = await fetchBenchmark(BENCHMARKS.world, historyDays, log, dataHealth);
+  const benchIsrael = await fetchBenchmark(BENCHMARKS.israel, historyDays, log, dataHealth, collection);
+  const benchWorld = await fetchBenchmark(BENCHMARKS.world, historyDays, log, dataHealth, collection);
   if (benchIsrael) log(`   ✅ ${benchIsrael.name} (${benchIsrael.symbol})`);
   if (benchWorld) log(`   ✅ ${benchWorld.name} (${benchWorld.symbol})`);
 
   for (const stock of WATCHLIST) {
+    if (collection.expired) break;
     try {
-      const daily = await fetchCandles(stock.symbol, historyDays);
+      const daily = await collection.run(stock.symbol, () => fetchCandles(stock.symbol, historyDays), []);
       recordDailyBarDate(dataHealth, stock.symbol, daily);
       const lastClose = daily.at(-1)?.close;
       if (lastClose != null && Number.isFinite(lastClose) && lastClose > 0) extraPrices.set(stock.symbol, lastClose);
       const candles = mode === "weekly" ? resampleWeekly(daily) : daily;
       const news = matchNewsForStock(allNews, stock.name);
       newsByStock.set(stock.symbol, news);
-      const fundamentals = await getFundamentals(stock.symbol);
+      const fundamentals = await collection.run(`${stock.symbol}:fundamentals`, () => getFundamentals(stock.symbol), null);
       const bench = stock.symbol.endsWith(".TA") ? benchIsrael : benchWorld;
       historicalForecasts.set(stock.symbol, historicalForecast({
         symbol: stock.symbol, candles: daily, benchmark: bench?.candles, asOf: generatedAt, events,
@@ -192,18 +199,22 @@ export async function runAnalysis(
 
         log(`   ✅ ${stock.name} (${stock.symbol}): ${result.recommendation} | ציון ${result.score}`);
       } else {
-        dataHealth.failures[stock.symbol] = "אין מספיק נתונים לניתוח";
+        dataHealth.failures[stock.symbol] ??= "אין מספיק נתונים לניתוח";
         log(`   ⚠️  ${stock.name} (${stock.symbol}): אין מספיק נתונים.`);
       }
     } catch (err) {
       dataHealth.failures[stock.symbol] = (err as Error).message;
       log(`   ❌ ${stock.name} (${stock.symbol}): שגיאה — ${(err as Error).message}`);
     }
-    await sleep(300);
+    if (!collection.expired) await sleep(300);
   }
 
   const analyzedSymbols = new Set(results.map((result) => result.symbol));
   dataHealth.missingSymbols = WATCHLIST.filter((stock) => !analyzedSymbols.has(stock.symbol)).map((stock) => stock.symbol);
+  if (collection.expired) {
+    dataHealth.warnings.push("תקציב איסוף הנתונים של חמש דקות הסתיים; נותר זמן לשמירת דוח חלקי.");
+    for (const symbol of dataHealth.missingSymbols) dataHealth.failures[symbol] ??= "לא נאסף בגלל מגבלת זמן כוללת.";
+  }
   if (!results.length) throw new Error("אין תוצאות ניתוח; הדוח וההיסטוריה הקודמים נשמרו");
   if (dataHealth.missingSymbols.length) log(`איסוף חלקי: נותחו ${dataHealth.analyzed} מתוך ${dataHealth.expected} מניות.`);
 
@@ -235,7 +246,7 @@ export async function runAnalysis(
     if (b != null) betas.push({ symbol: sym, name: s.name, beta: b });
   }
 
-  const indices = await analyzeWorldIndices(mode, onProgress);
+  const indices = await analyzeWorldIndices(mode, onProgress, collection);
   const analyzedIndices = new Set(indices.map((index) => index.symbol));
   for (const index of WORLD_INDICES) {
     if (!analyzedIndices.has(index.symbol)) {
@@ -245,7 +256,7 @@ export async function runAnalysis(
   }
   for (const index of indices) {
     try {
-      const candles = await fetchCandles(index.symbol, historyDays);
+      const candles = await collection.run(`${index.symbol}:history`, () => fetchCandles(index.symbol, historyDays), []);
       recordDailyBarDate(dataHealth, index.symbol, candles);
       historicalForecasts.set(index.symbol, historicalForecast({ symbol: index.symbol, candles, asOf: generatedAt, events }));
     } catch (error) {
@@ -263,19 +274,19 @@ export async function runAnalysis(
       const identifier = h.taseNumber ?? h.name;
       dataHealth.warnings.push(`${identifier}: מחיר בלבד, ללא ניתוח טכני; זמן הציטוט אינו מסופק.`);
       try {
-        const price = await fetchInvestingPrice(h.investingUrl!);
+        const price = await collection.run(identifier, () => fetchInvestingPrice(h.investingUrl!), null);
         if (price != null && Number.isFinite(price) && price > 0) {
           extraPrices.set(h.name, price);
           log(`   ✅ ${h.name}: ${price.toLocaleString("he-IL")}`);
         } else {
-          dataHealth.failures[identifier] = "לא התקבל מחיר מ-investing.com";
+          dataHealth.failures[identifier] ??= "לא התקבל מחיר מ-investing.com";
           log(`   ⚠️  ${h.name}: לא התקבל מחיר מ-investing.com.`);
         }
       } catch (error) {
         dataHealth.failures[identifier] = (error as Error).message;
         log(`   ⚠️  ${h.name}: ${(error as Error).message}`);
       }
-      await sleep(400);
+      if (!collection.expired) await sleep(400);
     }
   }
 
@@ -288,9 +299,9 @@ export async function runAnalysis(
     if (!r) continue;
     let second: number | null;
     try {
-      second = h.investingUrl
-        ? await fetchInvestingPrice(h.investingUrl)
-        : await fetchTasePrice(h.taseNumber!);
+      second = await collection.run(`${h.symbol}:verification`, () => h.investingUrl
+        ? fetchInvestingPrice(h.investingUrl)
+        : fetchTasePrice(h.taseNumber!), null);
     } catch (error) {
       dataHealth.warnings.push(`${h.symbol}: אימות מחיר ממקור שני נכשל: ${(error as Error).message}`);
       continue;
@@ -305,7 +316,7 @@ export async function runAnalysis(
       dataHealth.warnings.push(`${h.symbol}: פער מחיר ${deviationPct.toFixed(1)}% מול המקור השני; לאמת לפני פעולה.`);
       log(`   ⚠️  ${h.name}: פער מחיר ${deviationPct.toFixed(1)}% מול המקור השני (${second.toLocaleString("he-IL")}).`);
     }
-    await sleep(300);
+    if (!collection.expired) await sleep(300);
   }
 
   const sparkCloses = new Map<string, number[]>();
