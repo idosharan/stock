@@ -306,6 +306,15 @@ async function fetchNarrativeResponse(url: string, init: RequestInit, fetcher: t
   }
 }
 
+function narrativeConfigurationFailure(env: FormEnvironment): NarrativeFailure | undefined {
+  if (env.SEND_REPORT_TO_GEMINI !== "true") return "disabled";
+  if (!env.GEMINI_API_KEY?.trim()) return "missing_key";
+  if (!env.GEMINI_MODEL?.trim()) return "missing_model";
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(env.GEMINI_MODEL)) return "invalid_model";
+  if (env.NODE_TLS_REJECT_UNAUTHORIZED === "0" || process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") return "insecure_tls";
+  return undefined;
+}
+
 export async function requestNarrative(
   mode: ReportMode, digest: string, env: FormEnvironment, fetcher: typeof fetch = fetch,
   onFailure?: (code: NarrativeFailure, httpStatus?: number) => void,
@@ -315,13 +324,10 @@ export async function requestNarrative(
     onFailure?.(code, httpStatus);
     return undefined;
   };
-  const key = env.GEMINI_API_KEY;
-  const model = env.GEMINI_MODEL;
-  if (env.SEND_REPORT_TO_GEMINI !== "true") return fail("disabled");
-  if (!key?.trim()) return fail("missing_key");
-  if (!model?.trim()) return fail("missing_model");
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(model)) return fail("invalid_model");
-  if (env.NODE_TLS_REJECT_UNAUTHORIZED === "0" || process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") return fail("insecure_tls");
+  const configurationFailure = narrativeConfigurationFailure(env);
+  if (configurationFailure) return fail(configurationFailure);
+  const key = env.GEMINI_API_KEY!;
+  const model = env.GEMINI_MODEL!;
   if (!digest.trim()) return fail("empty_digest");
   if (Buffer.byteLength(digest, "utf8") > digestLimit) return fail("digest_too_large");
   try {
@@ -368,6 +374,71 @@ export async function requestNarrative(
     if (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)) return fail("timeout");
     return fail("network_error");
   }
+}
+
+export async function probeGemini(env: FormEnvironment, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; summary: string }> {
+  const started = Date.now();
+  const model = env.GEMINI_MODEL ?? "";
+  const key = env.GEMINI_API_KEY ?? "";
+  const redactionKey = key.trim();
+  const modelLabel = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(model) && !(redactionKey && model.includes(redactionKey))
+    ? model : "not configured, invalid or redacted";
+  const lines = ["GEMINI CHECK START", `Started UTC: ${new Date(started).toISOString()}`, `Model: ${modelLabel}`,
+    "Endpoint: generativelanguage.googleapis.com / v1beta / generateContent",
+    "Input: fixed synthetic example only; no report or portfolio read or sent."];
+  const finish = (ok: boolean) => ({ ok, summary: [...lines, `Elapsed ms: ${Date.now() - started}`, "GEMINI CHECK END"].join("\n") });
+  const configurationFailure = narrativeConfigurationFailure(env);
+  if (configurationFailure) {
+    lines.push(`Configuration: ${configurationFailure}. ${narrativeDiagnostics[configurationFailure]}`);
+    return finish(false);
+  }
+  const responseKind = (response: Response): string => {
+    const mime = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+    return mime === "application/json" ? "JSON" : mime === "text/html" ? "HTML" : "other";
+  };
+  let metadataResponse: Response | undefined;
+  try {
+    metadataResponse = await fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${model}`, {
+      method: "GET", redirect: "error", signal: AbortSignal.timeout(15_000), headers: { "x-goog-api-key": key },
+    });
+    const label = `Model lookup: HTTP ${metadataResponse.status}; response: ${responseKind(metadataResponse)}`;
+    if (metadataResponse.ok) {
+      try {
+        const metadata = JSON.parse(await boundedResponse(metadataResponse));
+        const supportsText = metadata?.name === `models/${model}` && Array.isArray(metadata.supportedGenerationMethods)
+          && metadata.supportedGenerationMethods.includes("generateContent");
+        lines.push(`${label}; generateContent: ${supportsText ? "yes" : "not confirmed"}`);
+      } catch (error) {
+        const reason = error instanceof NarrativeResponseError ? error.code
+          : error instanceof SyntaxError ? "invalid_response"
+          : error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name) ? "timeout" : "network_error";
+        lines.push(`${label}; generateContent: not confirmed; metadata: ${reason}`);
+      }
+    } else lines.push(`${label}; generateContent: not confirmed`);
+  } catch (error) {
+    const reason = error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name) ? "timeout" : "network_error";
+    lines.push(`Model lookup: ${reason}; generateContent: not confirmed`);
+  } finally { await metadataResponse?.body?.cancel().catch(() => undefined); }
+  let attempts = 0;
+  let httpStatus: number | undefined;
+  let kind = "no response";
+  let failure: NarrativeFailure = "incomplete_response";
+  const countedFetcher: typeof fetch = async (url, init) => {
+    attempts++;
+    httpStatus = undefined;
+    kind = "no response";
+    const response = await fetcher(url, init);
+    httpStatus = response.status;
+    kind = responseKind(response);
+    return response;
+  };
+  const narrative = await requestNarrative("daily",
+    "SYNTHETIC_DIAGNOSTIC_ONLY. Imaginary holding DEMO: entry 100, report price 101. No technical coverage, score or stop. No qualified buy, strengthen, sell or hold candidate. Summarize only these invented test facts in Hebrew.",
+    env, countedFetcher, code => { failure = code; });
+  lines.push(`Text probe: ${narrative ? "success" : failure}; HTTP ${httpStatus ?? "not received"}; response: ${kind}; attempts: ${attempts}`);
+  if (narrative) lines.push("Interpretation: the small request succeeded now; this does not prove the full report will succeed or identify the cause of earlier 503 errors.");
+  else lines.push(`Interpretation: ${narrativeDiagnostics[failure]} A failed synthetic probe is not evidence that portfolio data caused the error. Response type alone does not identify an intermediary or a global outage.`);
+  return finish(!!narrative);
 }
 
 function statusText(state: RunState | undefined, env: FormEnvironment): string {
@@ -468,7 +539,12 @@ async function main(): Promise<void> {
     await finalizeReports(root, env);
   } else if (command === "site") {
     await assembleSite(root, env);
-  } else throw new Error("Use plan, generate, finalize or site");
+  } else if (command === "gemini-check") {
+    const probe = await probeGemini(env);
+    console.log(probe.summary);
+    if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, plainTextBlock(probe.summary));
+    if (!probe.ok) process.exitCode = 1;
+  } else throw new Error("Use plan, generate, finalize, site or gemini-check");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
