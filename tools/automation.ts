@@ -158,7 +158,7 @@ const narrativeDiagnostics = {
   http_404: "HTTP 404: the requested resource was not found. Check the model identifier and generateContent availability for this project.",
   http_408: "HTTP 408: Google reported a request timeout. Retry in a later run.",
   http_429: "HTTP 429: rate or quota limit. Check Gemini API project usage, quota and billing separately from a consumer subscription.",
-  http_5xx: "HTTP 5xx: Google returned a server error. Retry in a later run or check provider status.",
+  http_5xx: "The Gemini API request returned a server error. For recurring failures, use the exact HTTP status to investigate; no provider body is logged.",
   http_error: "Google returned another unsuccessful HTTP status. No provider body is logged.",
   timeout: `The request or response read timed out or was aborted. The current request deadline is ${narrativeTimeoutMs / 1000} seconds.`,
   network_error: "The request or response transfer failed. Check network access and trusted TLS certificates; no raw exception is logged.",
@@ -200,10 +200,11 @@ async function boundedResponse(response: Response): Promise<string> {
 
 export async function requestNarrative(
   mode: ReportMode, digest: string, env: FormEnvironment, fetcher: typeof fetch = fetch,
-  onFailure?: (code: NarrativeFailure) => void,
+  onFailure?: (code: NarrativeFailure, httpStatus?: number) => void,
 ): Promise<string | undefined> {
+  let httpStatus: number | undefined;
   const fail = (code: NarrativeFailure): undefined => {
-    onFailure?.(code);
+    onFailure?.(code, httpStatus);
     return undefined;
   };
   const key = env.GEMINI_API_KEY;
@@ -226,6 +227,7 @@ export async function requestNarrative(
       }),
     });
     if (!response.ok) {
+      if (Number.isInteger(response.status) && response.status >= 100 && response.status <= 599) httpStatus = response.status;
       await response.body?.cancel().catch(() => undefined);
       switch (response.status) {
         case 400: return fail("http_400");
@@ -284,13 +286,18 @@ export async function finalizeReports(root: string, env: FormEnvironment, fetche
     }
     summary += plainTextBlock(`Fresh ${mode} digest\n${digest}`);
     let failure: NarrativeFailure = "incomplete_response";
-    const narrative = await requestNarrative(mode, digest, env, fetcher, code => { failure = code; });
+    let httpStatus: number | undefined;
+    const narrative = await requestNarrative(mode, digest, env, fetcher, (code, status) => {
+      failure = code;
+      httpStatus = status;
+    });
     if (narrative) {
       await writeFile(aiPath(root, mode), narrative, "utf8");
       state!.aiModes.push(mode);
       summary += plainTextBlock(narrative);
     } else {
-      summary += plainTextBlock(`${mode}: AI narrative disabled or unavailable; deterministic digest remains authoritative.\nGemini diagnostic: ${failure}. ${narrativeDiagnostics[failure]}`);
+      const statusDetail = httpStatus === undefined ? "" : `HTTP status: ${httpStatus}. `;
+      summary += plainTextBlock(`${mode}: AI narrative disabled or unavailable; deterministic digest remains authoritative.\nGemini diagnostic: ${failure}. ${statusDetail}${narrativeDiagnostics[failure]}`);
     }
   }
   if (state) await saveState(root, state);
