@@ -1,7 +1,8 @@
 import type { AnalysisResult } from "./analysis.js";
 import { PORTFOLIO, type HoldingDef } from "./config.js";
-import type { ReportHtmlInput } from "./html.js";
+import { holdingSellAlerts, type ReportHtmlInput } from "./html.js";
 import { selectDailyPick, type PickCandidate } from "./pick.js";
+import { buildBriefActions } from "./brief.js";
 
 export interface DataHealth {
   expected: number;
@@ -159,7 +160,9 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
   const pick = selectDailyPick(input.results, input.horizons, input.regime);
   lines.push("", "===== המלצת הרכישה =====", pick.main ? pickLine(pick.main, input) : "אין מועמדת שעברה את מסנני הבחירה עם הנתונים הזמינים.");
   for (const alternative of pick.alts) lines.push(`חלופה: ${pickLine(alternative, input)}`);
-  if (pick.strengthen) lines.push(`חיזוק החזקה: ${pickLine(pick.strengthen, input)}`);
+  if (pick.strengthen && !holdingSellAlerts(input.results, input.horizons, input.newsByStock).some(alert => alert.symbol === pick.strengthen?.r.symbol)) {
+    lines.push(`חיזוק החזקה: ${pickLine(pick.strengthen, input)}`);
+  }
   if (pick.regimeNote) lines.push(plain(pick.regimeNote));
   if (input.regime) lines.push(`מצב שוק: ${plain(input.regime.label)} | ציון ${number(input.regime.score)} | רוחב ${number(input.regime.breadthPct)}%`);
   lines.push("", "===== תחזית ומדדים =====", "תחזית היוריסטית, לא הסתברות מכוילת; הראיות ההיסטוריות ניסיוניות.", plain(input.forecast.summary));
@@ -172,6 +175,13 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
     rows: [...input.results].sort((left, right) => (input.horizons?.get(right.symbol)?.combined ?? right.score) - (input.horizons?.get(left.symbol)?.combined ?? left.score))
       .map((result) => rankingLine(result, input)),
   };
+  const actions = buildBriefActions(input);
+  lines.push("", "===== סיכום החלטות לפי כללי המנוע =====",
+    `קנייה / חיזוק: ${actions.buy.join(" | ") || "אין מועמדת"}`,
+    `מכירה / צמצום לבדיקה: ${actions.sell.join(" | ") || "אין התראת יציאה או צמצום לפי הסף"}`,
+    `החזקה / מעקב: ${actions.watch.join(" | ") || "אין החזקות שנותחו בקבוצה זו"}`,
+    `ללא סיווג טכני: ${actions.missing.join(" | ") || "אין"}`,
+    "התראות כלליות אינן המלצת מכירה; סיווגי הסעיף הזה משקפים את ספי החומרה בדוח.");
   const body = lines.join("\n");
   return {
     version: 1, mode: input.mode, generatedAt: input.generatedAt.toISOString(), portfolio,

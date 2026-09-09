@@ -12,6 +12,7 @@ import type { BetaEntry } from "./runner.js";
 import { selectDailyPick } from "./pick.js";
 import { PORTFOLIO, STOCK_SECTORS, HELD_SECTORS, PARAMS, RISK } from "./config.js";
 import { buildReportSummarySnapshot, type DataHealth, type ReportSummarySnapshot } from "./summary.js";
+import { renderPortfolioBrief, BRIEF_CSS } from "./brief.js";
 
 function esc(s: string): string {
   return String(s)
@@ -364,11 +365,11 @@ function renderCorrelationSection(
  * המלצות מכירה — התראות יציאה על ההחזקות בתיק (מנוקדות לפי חומרה) ואיתותי מכירה טריים
  * במניות שבמעקב. קרנות סל ממונפות אינן נכללות כאן — עבורן מוצג מעקב טריגרים בלבד.
  */
-function renderSellSection(
+export function holdingSellAlerts(
   results: AnalysisResult[],
   horizons?: Map<string, HorizonInfo>,
   news?: Map<string, StockNews>
-): string {
+): { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null }[] {
   const bySymbol = new Map(results.map((r) => [r.symbol, r]));
 
   type Alert = { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null };
@@ -443,10 +444,20 @@ function renderSellSection(
       reasons.push(`רווח ${plPct.toFixed(1)}% עם מתיחות קיצונית (סטוכסטי ${r.indicators.stochK?.toFixed(0)}, RSI ${r.indicators.rsi?.toFixed(0)}) — לשקול מימוש חלקי.`);
     }
 
-    if (severity >= 3) held.push({ name: h.name, symbol: r.symbol, price: r.price, severity, reasons, stop: r.risk?.stop ?? r.sequenceStop });
+    if (severity > 0) held.push({ name: h.name, symbol: r.symbol, price: r.price, severity, reasons, stop: r.risk?.stop ?? r.sequenceStop });
   }
 
   held.sort((a, b) => b.severity - a.severity);
+
+  return held;
+}
+
+function renderSellSection(
+  results: AnalysisResult[],
+  horizons?: Map<string, HorizonInfo>,
+  news?: Map<string, StockNews>
+): string {
+  const held = holdingSellAlerts(results, horizons, news).filter(alert => alert.severity >= 3);
 
   const heldHtml = held.length
     ? held
@@ -502,7 +513,8 @@ function renderSellSection(
 function renderDailyPickSection(
   results: AnalysisResult[],
   horizons?: Map<string, HorizonInfo>,
-  regime?: MarketRegime | null
+  regime?: MarketRegime | null,
+  news?: Map<string, StockNews>
 ): string {
   if (!horizons || horizons.size === 0) return "";
   const sel = selectDailyPick(results, horizons, regime);
@@ -574,7 +586,7 @@ function renderDailyPickSection(
         .join("")}</ul></div>`
     : "";
 
-  const strengthenHtml = sel.strengthen
+  const strengthenHtml = sel.strengthen && !holdingSellAlerts(results, horizons, news).some(alert => alert.symbol === sel.strengthen?.r.symbol)
     ? `<p class="pick-strength">💪 חיזוק החזקה קיימת: <strong>${esc(sel.strengthen.r.name)}</strong> — ${breakdown(sel.strengthen)}</p>`
     : "";
 
@@ -783,7 +795,7 @@ export function renderReportHtml(input: ReportHtmlInput): string {
     signalDeltas,
     priceChecks
   );
-  const pickHtml = renderDailyPickSection(results, horizons, regime);
+  const pickHtml = renderDailyPickSection(results, horizons, regime, newsByStock);
   const sellHtml = renderSellSection(results, horizons, newsByStock);
   const scorecardHtml = renderScorecardSection(scorecard);
   const corrHtml = renderCorrelationSection(correlations, betas);
@@ -937,7 +949,7 @@ export function renderReportHtml(input: ReportHtmlInput): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>${esc(title)} — ${esc(generatedAt.toLocaleDateString("he-IL"))}</title>
 ${FONT_LINK}
-<style>${REPORT_CSS}</style>
+<style>${REPORT_CSS}\n${BRIEF_CSS}</style>
 </head>
 <body>
 <main class="report">
@@ -951,6 +963,8 @@ ${FONT_LINK}
     <p id="data-freshness">נרות יומיים אחרונים: ${esc(freshness)}</p></div>
     <p class="freshness-note">זמן ההפקה אינו זמן הציטוט; המחירים אינם נתוני זמן אמת.</p>
   </header>
+
+  ${renderPortfolioBrief(input, summary)}
 
   <nav class="section-nav" aria-label="ניווט בדוח">
     <a href="#summary">תקציר</a><a href="#alerts">התראות</a><a href="#portfolio">התיק שלי</a><a href="#rankings">דירוג מניות</a><a href="#evidence">ראיות</a><a href="#data-health">נתונים</a>

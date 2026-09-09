@@ -4,6 +4,8 @@
  */
 import { writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import type { ReportReceipt } from "./ai-report.js";
 import type { AnalysisResult, HorizonInfo } from "./analysis.js";
 import type { IndexAnalysis } from "./indices.js";
 import type { StockNews, NewsItem } from "./news.js";
@@ -199,6 +201,11 @@ export async function generateReport(input: ReportInput): Promise<string> {
   } finally { store.close(); }
 
   await writeFile(join(dir, `latest-${mode}.txt`), `${summary.summary}\n`, "utf8");
+  const fingerprint = (text: string): string => createHash("sha256").update(text).digest("hex");
+  const receipt: ReportReceipt = { version: 1, mode, generatedAt: generatedAt.toISOString(), fileName,
+    digestHash: fingerprint(`${summary.summary}\n`), htmlHash: fingerprint(html) };
+  await mkdir(join(process.cwd(), ".cache"), { recursive: true });
+  await writeFile(join(process.cwd(), ".cache", `report-${mode}.json`), JSON.stringify(receipt), "utf8");
   return filePath;
 }
 
