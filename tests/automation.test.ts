@@ -9,6 +9,7 @@ import { parse } from "yaml";
 import { createHash } from "node:crypto";
 import { renderReportHtml } from "../src/html.js";
 import { EventEmitter, once } from "node:events";
+import timers from "node:timers/promises";
 
 test("generation supervisor terminates a real child with lingering background work", { timeout: 15_000 }, async context => {
   const { superviseReportProcess } = await import("../tools/automation.js");
@@ -182,6 +183,189 @@ const deliveryAssets = [
 ] as const;
 
 const project = resolve(import.meta.dirname, "..");
+
+test("Gemini-only probe checks the configured model and synthetic text without exposing payloads", async () => {
+  const automation = await import("../tools/automation.js");
+  assert.equal(typeof automation.probeGemini, "function");
+  const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_MODEL: "gemini-test", GEMINI_API_KEY: "fixture-secret-value" };
+  const calls: { url: string; init: RequestInit }[] = [];
+  const probe = await automation.probeGemini(env, async (url, init) => {
+    calls.push({ url: String(url), init: init! });
+    assert.equal(new Headers(init?.headers).get("x-goog-api-key"), env.GEMINI_API_KEY);
+    assert.equal(init?.redirect, "error");
+    if (init?.method === "GET") return Response.json({ name: "models/gemini-test", supportedGenerationMethods: ["generateContent"] });
+    const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body.generationConfig, { maxOutputTokens: 1600, temperature: 0.2 });
+    const content = JSON.parse(body.contents[0].parts[0].text);
+    assert.equal(content.mode, "daily");
+    assert.match(content.digest, /SYNTHETIC_DIAGNOSTIC_ONLY/);
+    assert.doesNotMatch(content.digest, /DSCT|POLI|SPCX|1145903/);
+    return Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "PRIVATE_GENERATED_TEXT" }] } }] });
+  });
+  assert.equal(probe.ok, true);
+  assert.deepEqual(calls.map(call => call.url), [
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-test",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent",
+  ]);
+  assert.match(probe.summary, /Model: gemini-test/);
+  assert.match(probe.summary, /Model lookup: HTTP 200; response: JSON; generateContent: yes/);
+  assert.match(probe.summary, /Text probe: success; HTTP 200; response: JSON; attempts: 1/);
+  assert.doesNotMatch(probe.summary, /fixture-secret-value|PRIVATE_GENERATED_TEXT|SYNTHETIC_DIAGNOSTIC_ONLY/);
+});
+
+test("Gemini-only probe uses safe configuration diagnostics and makes no requests without consent", async () => {
+  const automation = await import("../tools/automation.js");
+  assert.equal(typeof automation.probeGemini, "function");
+  const base = { SEND_REPORT_TO_GEMINI: "true", GEMINI_MODEL: "gemini-test", GEMINI_API_KEY: "fixture-secret-value" };
+  for (const [change, reason] of [
+    [{ SEND_REPORT_TO_GEMINI: "false" }, "disabled"], [{ GEMINI_API_KEY: "" }, "missing_key"],
+    [{ GEMINI_MODEL: "" }, "missing_model"], [{ GEMINI_MODEL: "<secret-unsafe>" }, "invalid_model"],
+    [{ NODE_TLS_REJECT_UNAUTHORIZED: "0" }, "insecure_tls"],
+  ] as const) {
+    const probe = await automation.probeGemini({ ...base, ...change }, async () => { throw new Error("must not fetch"); });
+    assert.equal(probe.ok, false);
+    assert.ok(probe.summary.includes(reason));
+    assert.doesNotMatch(probe.summary, /fixture-secret-value|secret-unsafe|must not fetch/);
+  }
+});
+
+test("Gemini-only CLI records its safe Summary without changing reports or configuration", async () => {
+  await temporary(async root => {
+    await writeFile(join(root, "unchanged.txt"), "original");
+    const summary = join(root, "summary.md");
+    const result = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), join(project, "tools", "automation.ts"), "gemini-check"], {
+      cwd: root, encoding: "utf8", env: { ...process.env, SEND_REPORT_TO_GEMINI: "false", GITHUB_STEP_SUMMARY: summary },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /GEMINI CHECK START/);
+    assert.match(await readFile(summary, "utf8"), /disabled/);
+    assert.deepEqual((await readdir(root)).sort(), ["summary.md", "unchanged.txt"]);
+    assert.equal(await readFile(join(root, "unchanged.txt"), "utf8"), "original");
+  });
+});
+
+test("Gemini-only probe safely reports 503 attempts and metadata failure without dumping responses", async context => {
+  const { probeGemini } = await import("../tools/automation.js");
+  const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_MODEL: "gemini-test", GEMINI_API_KEY: "fixture-secret-value" };
+  context.mock.method(timers, "setTimeout", async () => undefined);
+  let cancelled = 0;
+  let calls = 0;
+  const probe = await probeGemini(env, async (_url, init) => {
+    calls++;
+    const response = new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("PRIVATE_BODY fixture-secret-value")); },
+      cancel() { cancelled++; },
+    }), { status: 503, statusText: "PRIVATE_STATUS_TEXT", headers: { "content-type": "text/html; PRIVATE_HEADER=fixture-secret-value" } });
+    if (init?.method !== "GET") assert.match(String(init?.body), /SYNTHETIC_DIAGNOSTIC_ONLY/);
+    return response;
+  });
+  assert.equal(probe.ok, false);
+  assert.equal(calls, 4);
+  assert.equal(cancelled, 4);
+  assert.match(probe.summary, /Model lookup: HTTP 503; response: HTML/);
+  assert.match(probe.summary, /Text probe: http_5xx; HTTP 503; response: HTML; attempts: 3/);
+  assert.doesNotMatch(probe.summary, /PRIVATE_|fixture-secret-value/);
+});
+
+test("Gemini-only lookup failure does not mask a successful text probe and unsafe model display is redacted", async () => {
+  const { probeGemini } = await import("../tools/automation.js");
+  for (const lookup of ["bad-json", "unsupported", "wrong-name", "oversized", "not-found"]) {
+    const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_MODEL: "gemini-test", GEMINI_API_KEY: " gemini-test " };
+    const probe = await probeGemini(env, async (_url, init) => {
+      if (init?.method === "GET") {
+        assert.equal(new Headers(init.headers).get("x-goog-api-key"), "gemini-test");
+        if (lookup === "not-found") return new Response("PRIVATE_BODY", { status: 404 });
+        if (lookup === "oversized") return new Response("X".repeat(128_001));
+        if (lookup === "bad-json") return new Response("PRIVATE_BODY");
+        return Response.json({ name: lookup === "wrong-name" ? "models/other" : "models/gemini-test", supportedGenerationMethods: lookup === "unsupported" ? ["embedContent"] : ["generateContent"] });
+      }
+      return Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "PRIVATE_GENERATED_TEXT" }] } }] });
+    });
+    assert.equal(probe.ok, true, lookup);
+    assert.match(probe.summary, /generateContent: not confirmed/);
+    if (lookup === "bad-json") assert.match(probe.summary, /metadata: invalid_response/);
+    if (lookup === "oversized") assert.match(probe.summary, /metadata: response_too_large/);
+    assert.match(probe.summary, /Model: not configured, invalid or redacted/);
+    assert.doesNotMatch(probe.summary, /PRIVATE_|gemini-test/);
+  }
+});
+
+test("Gemini-only probe bounds lookup and narration independently and does not retain HTTP status on network failure", async context => {
+  const { probeGemini } = await import("../tools/automation.js");
+  const durations: number[] = [];
+  const controllers: AbortController[] = [];
+  context.mock.method(AbortSignal, "timeout", (duration: number) => {
+    durations.push(duration);
+    const controller = new AbortController();
+    controllers.push(controller);
+    return controller.signal;
+  });
+  const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_MODEL: "gemini-test", GEMINI_API_KEY: "fixture-secret-value" };
+  const pending = probeGemini(env, async (_url, init) => {
+    if (init?.method === "GET") return new Response(new ReadableStream({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => controller.error(new DOMException("PRIVATE_TIMEOUT", "TimeoutError")), { once: true });
+      },
+    }), { headers: { "content-type": "application/json" } });
+    return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("PRIVATE_TIMEOUT", "TimeoutError")), { once: true }));
+  });
+  await new Promise(resolveTick => setImmediate(resolveTick));
+  assert.deepEqual(durations, [15_000]);
+  controllers[0].abort();
+  await new Promise(resolveTick => setImmediate(resolveTick));
+  assert.deepEqual(durations, [15_000, 60_000]);
+  controllers[1].abort();
+  const probe = await pending;
+  assert.equal(probe.ok, false);
+  assert.match(probe.summary, /Model lookup: HTTP 200; response: JSON; generateContent: not confirmed; metadata: timeout/);
+  assert.match(probe.summary, /Text probe: timeout; HTTP not received/);
+  assert.doesNotMatch(probe.summary, /PRIVATE_TIMEOUT|fixture-secret-value/);
+});
+
+test("Gemini-only workflow is manual, read-only, default-branch guarded and never generates or publishes reports", async () => {
+  const file = join(project, ".github", "workflows", "gemini-check.yml");
+  const source = await readFile(file, "utf8").catch(() => "");
+  assert.ok(source, "Expected a standalone Gemini API Check workflow");
+  const workflow = parse(source);
+  assert.equal(workflow.name, "Gemini API Check");
+  assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  const job = workflow.jobs.check;
+  assert.equal(job["timeout-minutes"], 5);
+  const guard = job.steps.find((step: { id?: string }) => step.id === "guard");
+  assert.match(guard.run, /GITHUB_REF/);
+  assert.match(guard.run, /DEFAULT_BRANCH/);
+  const checkout = job.steps.find((step: { uses?: string }) => step.uses?.startsWith("actions/checkout@"));
+  assert.equal(checkout.with["persist-credentials"], false);
+  assert.equal(checkout.with.ref, "${{ github.event.repository.default_branch }}");
+  assert.ok(job.steps.indexOf(guard) < job.steps.indexOf(checkout));
+  const check = job.steps.find((step: { id?: string }) => step.id === "probe");
+  assert.equal(check.run, "npm run automation -- gemini-check");
+  assert.deepEqual(check.env, { SEND_REPORT_TO_GEMINI: "${{ vars.SEND_REPORT_TO_GEMINI }}", GEMINI_MODEL: "${{ vars.GEMINI_MODEL }}", GEMINI_API_KEY: "${{ secrets.GEMINI_API_KEY }}" });
+  assert.equal(job.steps.filter((step: { env?: Record<string, string> }) => step.env?.GEMINI_API_KEY).length, 1);
+  assert.doesNotMatch(source, /contents: write|git push|npm run daily|-- generate|-- finalize|upload-artifact|deploy-pages|pull_request|schedule:/);
+});
+
+test("Gemini-only probe keeps a received HTTP 200 on invalid content but clears it for a later network failure", async context => {
+  const { probeGemini } = await import("../tools/automation.js");
+  context.mock.method(timers, "setTimeout", async () => undefined);
+  const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_MODEL: "gemini-test", GEMINI_API_KEY: "fixture-secret-value" };
+  for (const scenario of ["invalid-content", "network-after-retry"]) {
+    let attempts = 0;
+    const probe = await probeGemini(env, async (_url, init) => {
+      if (init?.method === "GET") return Response.json({});
+      attempts++;
+      if (scenario === "invalid-content") return new Response("PRIVATE_BODY", { headers: { "content-type": "application/json" } });
+      if (attempts === 1) return new Response(null, { status: 503 });
+      throw new Error("PRIVATE_NETWORK_DETAIL fixture-secret-value");
+    });
+    assert.equal(probe.ok, false);
+    assert.ok(probe.summary.includes(scenario === "invalid-content"
+      ? "Text probe: invalid_response; HTTP 200; response: JSON; attempts: 1"
+      : "Text probe: network_error; HTTP not received; response: no response; attempts: 2"));
+    assert.doesNotMatch(probe.summary, /PRIVATE_|fixture-secret-value/);
+  }
+});
 const fixture: InstrumentConfig = {
   version: 1,
   watchlist: [{ symbol: "TEST.TA", name: "Test bank" }],
