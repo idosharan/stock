@@ -11,6 +11,36 @@ import { buildReportSummary, buildReportSummarySnapshot } from "../src/summary.j
 import { PORTFOLIO, type HoldingDef } from "../src/config.js";
 import { buildBriefActions } from "../src/brief.js";
 
+test("collection budget caps each call and the whole collection without accepting late results", async context => {
+  const module = await import("../src/collection-budget.js").catch(() => null);
+  assert.ok(module, "Expected a shared collection budget");
+  context.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const timeouts: string[] = [];
+  const budget = new module.CollectionBudget(label => timeouts.push(label));
+  let complete!: (value: number) => void;
+  const pending = budget.run("hung", () => new Promise<number>(resolveValue => { complete = resolveValue; }), -1);
+  await Promise.resolve();
+  context.mock.timers.tick(29_999);
+  assert.deepEqual(timeouts, []);
+  context.mock.timers.tick(1);
+  assert.equal(await pending, -1);
+  complete(42);
+  await Promise.resolve();
+  assert.deepEqual(timeouts, ["hung"]);
+  assert.equal(await budget.run("fast", async () => 7, -1), 7);
+  context.mock.timers.tick(269_000);
+  const last = budget.run("last", () => new Promise<number>(() => {}), -1);
+  context.mock.timers.tick(999);
+  assert.equal(budget.expired, false);
+  context.mock.timers.tick(1);
+  assert.equal(await last, -1);
+  assert.equal(budget.expired, true);
+  let launched = false;
+  assert.equal(await budget.run("skipped", async () => { launched = true; return 9; }, -1), -1);
+  assert.equal(launched, false);
+  assert.deepEqual(timeouts, ["hung", "last", "skipped"]);
+});
+
 test("brief actions preserve sell thresholds and explain weaker watch cautions without classifying missing funds", () => {
   const input = reportInput();
   const held = stock("DSCT.TA", 10);
@@ -320,6 +350,7 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
     config.PORTFOLIO.splice(0, config.PORTFOLIO.length,
       { symbol: 'DSCT.TA', name: 'בנק דיסקונט', entryPrice: 3314.74 }, energy, defense);
     let empty = false;
+    let stalled = '';
     const daily = Array.from({ length: 350 }, (_, index) => ({
       date: new Date(Date.parse('2026-09-04T12:00:00Z') - (349 - index) * 86400000),
       open: 100 + index, high: 102 + index, low: 99 + index, close: 101 + index, volume: 1000000,
@@ -329,20 +360,24 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
       ensureTls: async () => {},
       fetchCandles: async symbol => {
         if (empty) return [];
+        if (stalled === 'zero') return new Promise(() => {});
+        if ((stalled === 'stocks' && symbol === 'SHORT.TA') || (stalled === 'indices' && symbol === '^HANG')
+          || (stalled === 'deadline' && symbol !== 'DSCT.TA' && ![config.BENCHMARKS.israel.symbol, config.BENCHMARKS.israel.fallback, config.BENCHMARKS.world.symbol, config.BENCHMARKS.world.fallback].includes(symbol))) return new Promise(() => {});
+        if (stalled === 'indices' && ['^GOOD', '^LATER'].includes(symbol)) return daily;
         if (symbol === 'FAIL.TA') throw new Error('HTTP 429');
         if (symbol === 'DSCT.TA') return daily;
         if (symbol === 'SHORT.TA') return daily.slice(-3, -2);
         return [];
       },
-      fetchInvestingPrice: async url => { if (url === energy.investingUrl) return 4502; throw new Error('quote unavailable'); },
+      fetchInvestingPrice: async url => { if (stalled === 'etf') return new Promise(() => {}); if (url === energy.investingUrl) return 4502; throw new Error('quote unavailable'); },
       fetchTasePrice: async () => null,
     }});
     const news = await import(${JSON.stringify(`${source}news.ts`)});
-    mock.module(${JSON.stringify(`${source}news.ts`)}, { namedExports: { ...news, fetchAllNews: async () => [] }});
+    mock.module(${JSON.stringify(`${source}news.ts`)}, { namedExports: { ...news, fetchAllNews: async () => stalled === 'news' ? new Promise(() => {}) : [] }});
     const fundamentals = await import(${JSON.stringify(`${source}fundamentals.ts`)});
-    mock.module(${JSON.stringify(`${source}fundamentals.ts`)}, { namedExports: { ...fundamentals, getFundamentals: async () => null }});
+    mock.module(${JSON.stringify(`${source}fundamentals.ts`)}, { namedExports: { ...fundamentals, getFundamentals: async () => stalled === 'fundamentals' ? new Promise(() => {}) : null }});
     const indices = await import(${JSON.stringify(`${source}indices.ts`)});
-    mock.module(${JSON.stringify(`${source}indices.ts`)}, { namedExports: { ...indices, analyzeWorldIndices: async () => [] }});
+    mock.module(${JSON.stringify(`${source}indices.ts`)}, { namedExports: { ...indices, analyzeWorldIndices: async (...args) => stalled === 'indices' ? indices.analyzeWorldIndices(...args) : [] }});
     const { runAnalysis } = await import(${JSON.stringify(`${source}runner.ts`)});
     process.chdir(${JSON.stringify(root)});
     const output = console.log;
@@ -359,12 +394,36 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
     empty = true;
     let rejected = false;
     try { await runAnalysis('daily'); } catch (error) { rejected = /אין.*תוצאות|zero analyzed/i.test(error.message); }
-    output(JSON.stringify({ runs, rejected, preserved: retained === readFileSync(join('reports', 'state.sqlite')).toString('base64'),
-      summaryPreserved: summary === readFileSync(join('reports', 'latest-daily.txt'), 'utf8') }));
+    const preserved = retained === readFileSync(join('reports', 'state.sqlite')).toString('base64');
+    const summaryPreserved = summary === readFileSync(join('reports', 'latest-daily.txt'), 'utf8');
+    empty = false;
+    const partials = [];
+    config.WORLD_INDICES.splice(0, config.WORLD_INDICES.length,
+      ...['^GOOD', '^HANG', '^LATER'].map(symbol => ({ symbol, name: symbol, region: 'ישראל' })));
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+    const clock = setInterval(() => mock.timers.tick(1000), 2);
+    try {
+      for (const scenario of ['stocks', 'news', 'fundamentals', 'indices', 'etf', 'deadline']) {
+        stalled = scenario;
+        if (scenario === 'deadline') config.WATCHLIST.push(...Array.from({ length: 12 }, (_, index) => ({ symbol: 'HANG' + index + '.TA', name: 'hung' })));
+        const result = await runAnalysis('daily');
+        partials.push({ scenario, symbols: result.results.map(stock => stock.symbol), health: result.dataHealth,
+          indices: result.indices.map(index => index.symbol), saved: readFileSync(result.reportPath, 'utf8').includes('איסוף חלקי') });
+      }
+      const beforeEmpty = readFileSync(join('reports', 'latest-daily.txt'), 'utf8');
+      const historyBeforeEmpty = readFileSync(join('reports', 'state.sqlite')).toString('base64');
+      stalled = 'zero';
+      let zeroRejected = false;
+      try { await runAnalysis('daily'); } catch (error) { zeroRejected = /אין.*תוצאות/.test(error.message); }
+      partials.push({ scenario: 'zero', zeroRejected, preserved: beforeEmpty === readFileSync(join('reports', 'latest-daily.txt'), 'utf8'),
+        historyPreserved: historyBeforeEmpty === readFileSync(join('reports', 'state.sqlite')).toString('base64') });
+    } finally { clearInterval(clock); mock.timers.reset(); }
+    output(JSON.stringify({ runs, rejected, preserved, summaryPreserved, partials }));
   `;
   try {
     const output = execFileSync(process.execPath, ["--experimental-test-module-mocks", "--import", "tsx", "--input-type=module", "-e", script], {
       cwd: new URL("../", import.meta.url), encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+      timeout: 30_000,
     });
     const fixture = JSON.parse(output);
     for (const run of fixture.runs) {
@@ -384,6 +443,19 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
     assert.equal(fixture.rejected, true);
     assert.equal(fixture.preserved, true);
     assert.equal(fixture.summaryPreserved, true);
+    for (const partial of fixture.partials.filter(partial => partial.scenario !== "zero")) {
+      assert.ok(partial.symbols.includes("DSCT.TA"), partial.scenario);
+      assert.equal(partial.saved, true, partial.scenario);
+      assert.ok(Object.values(partial.health.failures).some(reason => /זמן/.test(String(reason))), partial.scenario);
+    }
+    assert.deepEqual(fixture.partials.find(partial => partial.scenario === "indices").indices, ["^GOOD", "^LATER"]);
+    const limited = fixture.partials.find(partial => partial.scenario === "deadline");
+    assert.equal(limited.health.analyzed, 1);
+    assert.equal(limited.health.missingSymbols.length, 14);
+    const zero = fixture.partials.find(partial => partial.scenario === "zero");
+    assert.equal(zero.zeroRejected, true);
+    assert.equal(zero.preserved, true);
+    assert.equal(zero.historyPreserved, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

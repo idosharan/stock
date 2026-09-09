@@ -3,11 +3,100 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { loadInstrumentConfig, type InstrumentConfig } from "../src/instruments.js";
 import { parse } from "yaml";
 import { createHash } from "node:crypto";
 import { renderReportHtml } from "../src/html.js";
+import { EventEmitter, once } from "node:events";
+
+test("generation supervisor terminates a real child with lingering background work", { timeout: 15_000 }, async context => {
+  const { superviseReportProcess } = await import("../tools/automation.js");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  let child: ChildProcess | undefined;
+  const launch = ((executable: string, args: string[], options: object) => {
+    child = spawn(executable, args, { ...options, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    return child;
+  }) as typeof spawn;
+  try {
+    const outcome = superviseReportProcess(project, process.execPath,
+      ["-e", "setInterval(() => {}, 1000); process.send('ready');"], launch);
+    await once(child!, "message");
+    context.mock.timers.tick(360_000);
+    assert.deepEqual(await outcome, { code: null, timedOut: true });
+    assert.equal(child!.signalCode, "SIGKILL");
+  } finally {
+    if (child?.exitCode == null && child?.signalCode == null) child?.kill("SIGKILL");
+  }
+});
+
+test("generation supervisor stops a stuck child at six minutes and waits for its exit", async context => {
+  const automation = await import("../tools/automation.js");
+  assert.equal(typeof automation.superviseReportProcess, "function");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const child = new EventEmitter();
+  const kills: string[] = [];
+  Object.assign(child, { kill: (signal: string) => { kills.push(signal); return true; } });
+  let settled = false;
+  const pending = automation.superviseReportProcess("fixture", process.execPath, ["fixture.ts"], (() => child) as never)
+    .then(result => { settled = true; return result; });
+  context.mock.timers.tick(359_999);
+  assert.deepEqual(kills, []);
+  context.mock.timers.tick(1);
+  assert.deepEqual(kills, ["SIGKILL"]);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  child.emit("exit", null, "SIGKILL");
+  assert.deepEqual(await pending, { code: null, timedOut: true });
+});
+
+test("generation supervisor cleans timers and never promotes normal failures or cancellation", async context => {
+  const automation = await import("../tools/automation.js");
+  assert.equal(typeof automation.superviseReportProcess, "function");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const outcome of ["success", "failure", "cancel", "spawn-error"]) {
+    const child = new EventEmitter();
+    const kills: string[] = [];
+    Object.assign(child, { kill: (signal: string) => { kills.push(signal); return true; } });
+    const pending = automation.superviseReportProcess("fixture", process.execPath, [], (() => child) as never);
+    if (outcome === "spawn-error") child.emit("error", new Error("fixture"));
+    else child.emit("exit", outcome === "cancel" ? null : outcome === "success" ? 0 : 1, outcome === "cancel" ? "SIGTERM" : null);
+    assert.deepEqual(await pending, { code: outcome === "success" ? 0 : outcome === "cancel" ? null : 1, timedOut: false });
+    context.mock.timers.tick(360_000);
+    assert.deepEqual(kills, []);
+  }
+});
+
+test("generation recovers timed-out daily and weekly children only from validated report outputs", async () => {
+  const { generateReports, finalizeReports } = await import("../tools/automation.js");
+  await temporary(async root => {
+    const state = await generateReports(root, ["daily", "weekly"], "timeout-run", async (_executable, args) => {
+      await generatedHtmlFixture(root, args.at(-1) === "--mode=daily" ? "daily" : "weekly");
+      return { code: null, timedOut: true };
+    });
+    assert.deepEqual(state.completed, ["daily", "weekly"]);
+    assert.deepEqual(state.recovered, ["daily", "weekly"]);
+    assert.deepEqual(state.failed, []);
+    const summary = join(root, "summary.md");
+    await finalizeReports(root, { AUTOMATION_RUN_ID: "timeout-run", GITHUB_STEP_SUMMARY: summary });
+    assert.match(await readFile(summary, "utf8"), /Recovered after 6-minute process limit: daily, weekly/);
+  });
+  for (const invalid of ["missing", "changed", "receipt", "nonzero", "cancelled"]) {
+    await temporary(async root => {
+      const state = await generateReports(root, ["daily"], "invalid-timeout", async () => {
+        if (invalid !== "missing") {
+          const fixture = await generatedHtmlFixture(root, "daily");
+          if (invalid === "changed") await writeFile(join(root, "reports", fixture.fileName), "changed");
+          if (invalid === "receipt") await writeFile(join(root, ".cache", "report-daily.json"), "{}");
+        }
+        return { code: invalid === "nonzero" ? 1 : null, timedOut: invalid !== "cancelled" };
+      });
+      assert.deepEqual(state.completed, [], invalid);
+      assert.deepEqual(state.failed, ["daily"], invalid);
+      await assert.rejects(readFile(join(root, "reports", "latest-daily.txt")), { code: "ENOENT" });
+    });
+  }
+});
 
 async function generatedHtmlFixture(root: string, mode: "daily" | "weekly") {
   const generatedAt = new Date();
