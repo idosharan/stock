@@ -289,15 +289,17 @@ test("Gemini diagnostics distinguish failures in Actions Summary without exposin
       GEMINI_MODEL: "configured-model",
     };
     const providerText = "provider-private-message test-secret-never-log";
-    const cases: { code: string; env?: Record<string, string>; fetcher: typeof fetch; calls: number }[] = [
+    const cases: { code: string; status?: number; env?: Record<string, string>; fetcher: typeof fetch; calls: number }[] = [
       { code: "disabled", env: { SEND_REPORT_TO_GEMINI: "false" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
       { code: "missing_key", env: { GEMINI_API_KEY: "" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
       { code: "missing_model", env: { GEMINI_MODEL: "" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
       { code: "invalid_model", env: { GEMINI_MODEL: "models/configured-model" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
       { code: "insecure_tls", env: { NODE_TLS_REJECT_UNAUTHORIZED: "0" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
-      ...[400, 401, 403, 404, 408, 429, 503, 418].map(status => ({
-        code: status === 503 ? "http_5xx" : status === 418 ? "http_error" : `http_${status}`,
-        calls: 1, fetcher: async () => new Response(providerText, { status }),
+      ...[400, 401, 403, 404, 408, 429, 500, 501, 502, 503, 504, 599, 418].map(status => ({
+        code: status >= 500 ? "http_5xx" : status === 418 ? "http_error" : `http_${status}`,
+        status, calls: 1, fetcher: async () => new Response(providerText, {
+          status, statusText: providerText, headers: { "x-provider-detail": providerText },
+        }),
       })),
       { code: "timeout", calls: 1, fetcher: async () => { throw new DOMException(providerText, "TimeoutError"); } },
       { code: "timeout", calls: 1, fetcher: async () => { throw new DOMException(providerText, "AbortError"); } },
@@ -326,6 +328,8 @@ test("Gemini diagnostics distinguish failures in Actions Summary without exposin
       const text = await readFile(summary, "utf8");
       assert.match(text, new RegExp(`Gemini diagnostic: ${scenario.code}\\.`));
       const diagnostic = text.split("\n").find(line => line.includes("Gemini diagnostic:"))!;
+      if (scenario.status !== undefined) assert.match(diagnostic, new RegExp(`HTTP status: ${scenario.status}\\.`));
+      else assert.doesNotMatch(diagnostic, /HTTP status:/);
       if (scenario.code === "timeout") assert.match(diagnostic, /deadline is 60 seconds/);
       assert.doesNotMatch(diagnostic, /private portfolio fixture|test-secret-never-log|provider-private-message|UNRECOGNIZED_PRIVATE_REASON/);
       assert.doesNotMatch(text, /test-secret-never-log|provider-private-message|UNRECOGNIZED_PRIVATE_REASON|old AI/);
