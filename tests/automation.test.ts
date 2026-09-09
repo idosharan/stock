@@ -258,6 +258,104 @@ test("Gemini deadline allows slower responses but aborts stalled requests and re
   }
 });
 
+test("Gemini retries 503 with bounded backoff and identical requests before recovering", async context => {
+  const { requestNarrative } = await import("../tools/automation.js");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  context.mock.method(Math, "random", () => 0);
+  const requests: RequestInit[] = [];
+  let cancelled = 0;
+  const diagnostics: string[] = [];
+  const result = requestNarrative("daily", "digest", {
+    SEND_REPORT_TO_GEMINI: "true", GEMINI_API_KEY: "test-secret", GEMINI_MODEL: "configured-model",
+  }, async (_input, init) => {
+    requests.push(init!);
+    if (requests.length < 3) return new Response(new ReadableStream({
+      cancel() { cancelled++; },
+    }), { status: 503 });
+    return Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "Recovered summary" }] } }] });
+  }, code => { diagnostics.push(code); });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 1);
+  assert.equal(cancelled, 1);
+  context.mock.timers.tick(1999);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 1);
+  context.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 2);
+  assert.equal(cancelled, 2);
+  context.mock.timers.tick(3999);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 2);
+  context.mock.timers.tick(1);
+  assert.match((await result)!, /Recovered summary/);
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].signal, requests[2].signal);
+  assert.equal(requests[0].body, requests[2].body);
+  assert.deepEqual(diagnostics, []);
+});
+
+test("Gemini retry stops at the original deadline and does not retain a stale 503 status", async context => {
+  const { requestNarrative } = await import("../tools/automation.js");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  context.mock.method(Math, "random", () => 0);
+  context.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("private detail", "TimeoutError")), milliseconds);
+    return controller.signal;
+  });
+  const diagnostics: { code: string; status?: number }[] = [];
+  let calls = 0;
+  const result = requestNarrative("daily", "digest", {
+    SEND_REPORT_TO_GEMINI: "true", GEMINI_API_KEY: "test-secret", GEMINI_MODEL: "configured-model",
+  }, async () => {
+    calls++;
+    return new Promise<Response>(resolve => {
+      setTimeout(() => resolve(new Response("private detail", { status: 503 })), 59_000);
+    });
+  }, (code, status) => { diagnostics.push({ code, status }); });
+  context.mock.timers.tick(59_000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  context.mock.timers.tick(1000);
+  assert.equal(await result, undefined);
+  assert.equal(calls, 1);
+  assert.deepEqual(diagnostics, [{ code: "timeout", status: undefined }]);
+});
+
+test("Gemini retries respect Retry-After and retain only the final failure status", async context => {
+  const { requestNarrative } = await import("../tools/automation.js");
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  context.mock.method(Math, "random", () => 0);
+  context.mock.method(Date, "now", () => Date.UTC(2026, 8, 9));
+  const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_API_KEY: "test-secret", GEMINI_MODEL: "configured-model" };
+  for (const retryAfter of ["10", "Wed, 09 Sep 2026 00:00:10 GMT"]) {
+    let calls = 0;
+    const diagnostics: { code: string; status?: number }[] = [];
+    const result = requestNarrative("daily", "digest", env, async () => {
+      calls++;
+      return new Response("private provider detail", calls === 1
+        ? { status: 503, headers: { "Retry-After": retryAfter } }
+        : { status: 403 });
+    }, (code, status) => { diagnostics.push({ code, status }); });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    context.mock.timers.tick(9999);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(calls, 1);
+    context.mock.timers.tick(1);
+    assert.equal(await result, undefined);
+    assert.equal(calls, 2);
+    assert.deepEqual(diagnostics, [{ code: "http_403", status: 403 }]);
+  }
+  let calls = 0;
+  const statuses: number[] = [];
+  assert.equal(await requestNarrative("daily", "digest", env, async () => {
+    calls++;
+    return new Response("private provider detail", { status: 503, headers: { "Retry-After": "120" } });
+  }, (_code, status) => { statuses.push(status!); }), undefined);
+  assert.equal(calls, 1);
+  assert.deepEqual(statuses, [503]);
+});
+
 test("Gemini errors, blocked or oversized output return deterministic fallback without leaking bodies", async () => {
   const { requestNarrative } = await import("../tools/automation.js");
   const env = { SEND_REPORT_TO_GEMINI: "true", GEMINI_API_KEY: "test-secret", GEMINI_MODEL: "configured-model" };
@@ -297,7 +395,7 @@ test("Gemini diagnostics distinguish failures in Actions Summary without exposin
       { code: "insecure_tls", env: { NODE_TLS_REJECT_UNAUTHORIZED: "0" }, calls: 0, fetcher: async () => { throw new Error(providerText); } },
       ...[400, 401, 403, 404, 408, 429, 500, 501, 502, 503, 504, 599, 418].map(status => ({
         code: status >= 500 ? "http_5xx" : status === 418 ? "http_error" : `http_${status}`,
-        status, calls: 1, fetcher: async () => new Response(providerText, {
+        status, calls: status === 503 ? 3 : 1, fetcher: async () => new Response(providerText, {
           status, statusText: providerText, headers: { "x-provider-detail": providerText },
         }),
       })),
