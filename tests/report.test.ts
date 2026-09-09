@@ -31,6 +31,19 @@ function reportInput(): ReportHtmlInput {
   };
 }
 
+test("portfolio brief precedes navigation and keeps missing holdings unclassified", () => {
+  const html = renderReportHtml(reportInput());
+  const start = html.indexOf('id="portfolio-brief"');
+  assert.ok(start > 0, "Expected an always-visible portfolio brief");
+  assert.ok(start < html.indexOf('<nav class="section-nav"'));
+  const brief = html.slice(start, html.indexOf('<nav class="section-nav"'));
+  for (const label of ["קנייה / חיזוק", "מכירה / צמצום", "החזקה / מעקב", "ללא כיסוי טכני", "בנק דיסקונט", "1145903"])
+    assert.ok(brief.includes(label), label);
+  assert.match(brief, /id="ai-report-narrative"/);
+  assert.doesNotMatch(brief, /רווח כולל|שווי התיק/);
+  assert.match(brief, /אין החזקות שנותחו/);
+});
+
 function evidence(symbol = "DSCT.TA"): HistoricalForecast {
   return {
     symbol, asOf: "2026-09-04", regime: "trend", warnings: ['<img src=x onerror="bad()">'],

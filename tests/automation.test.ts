@@ -6,6 +6,82 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadInstrumentConfig, type InstrumentConfig } from "../src/instruments.js";
 import { parse } from "yaml";
+import { createHash } from "node:crypto";
+import { renderReportHtml } from "../src/html.js";
+
+async function generatedHtmlFixture(root: string, mode: "daily" | "weekly") {
+  const generatedAt = new Date();
+  const html = renderReportHtml({ mode, generatedAt, results: [], indices: [], newsByStock: new Map(),
+    forecast: { horizon: "היום", summary: "סקירה", markets: [], newsTone: { positive: 0, negative: 0, neutral: 0, label: "ניטרלי" } } });
+  const snapshot = JSON.parse(/<script type="application\/json" id="report-summary">([\s\S]*?)<\/script>/.exec(html)![1]);
+  const digest = `${snapshot.summary}\n`;
+  const stamp = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(generatedAt);
+  const fileName = `report-${mode}-${stamp}.html`;
+  const fingerprint = (value: string) => createHash("sha256").update(value).digest("hex");
+  await writeFile(join(root, "reports", fileName), html);
+  await writeFile(join(root, "reports", `latest-${mode}.txt`), digest);
+  await writeFile(join(root, ".cache", `report-${mode}.json`), JSON.stringify({ version: 1, mode, generatedAt: generatedAt.toISOString(), fileName, digestHash: fingerprint(digest), htmlHash: fingerprint(html) }));
+  return { html, fileName, digest };
+}
+
+test("finalize embeds escaped AI in the exact daily and weekly HTML and replaces or removes it idempotently", async () => {
+  const { generateReports, finalizeReports } = await import("../tools/automation.js");
+  await temporary(async root => {
+    const files = new Map<string, Awaited<ReturnType<typeof generatedHtmlFixture>>>();
+    await generateReports(root, ["daily", "weekly"], "html-run", async (_executable, args) => {
+      const mode = args.at(-1) === "--mode=daily" ? "daily" : "weekly";
+      files.set(mode, await generatedHtmlFixture(root, mode));
+      return 0;
+    });
+    const historical = join(root, "reports", "report-daily-2020-01-01.html");
+    await writeFile(historical, "historical untouched");
+    const env = { AUTOMATION_RUN_ID: "html-run", GITHUB_STEP_SUMMARY: join(root, "summary.md"), SEND_REPORT_TO_GEMINI: "true", GEMINI_MODEL: "gemini-test", GEMINI_API_KEY: "fixture-secret" };
+    const reply = async () => new Response(JSON.stringify({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "מצב התיק\n<script>alert(1)</script>\nקנייה / חיזוק: לבדיקה" }] } }] }));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await finalizeReports(root, env, reply);
+      for (const [mode, fixture] of files) {
+        const actual = await readFile(join(root, "reports", fixture.fileName), "utf8");
+        assert.ok(actual.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), "AI must be escaped into HTML");
+        assert.equal(actual.split('id="ai-report-narrative"').length, 2);
+        assert.equal(actual.slice(actual.indexOf('<script type="application/json" id="report-summary">')), fixture.html.slice(fixture.html.indexOf('<script type="application/json" id="report-summary">')));
+        assert.equal(await readFile(join(root, "reports", `latest-${mode}.txt`), "utf8"), fixture.digest);
+      }
+    }
+    await finalizeReports(root, { ...env, SEND_REPORT_TO_GEMINI: "false" }, async () => { throw new Error("must not fetch"); });
+    for (const fixture of files.values()) assert.equal(await readFile(join(root, "reports", fixture.fileName), "utf8"), fixture.html);
+    await finalizeReports(root, env, reply);
+    await finalizeReports(root, env, async () => new Response(null, { status: 403 }));
+    for (const fixture of files.values()) assert.equal(await readFile(join(root, "reports", fixture.fileName), "utf8"), fixture.html);
+    assert.equal(await readFile(historical, "utf8"), "historical untouched");
+  });
+});
+
+test("HTML binding refuses mismatched run, digest, report content and stale generation receipts", async () => {
+  const { generateReports, finalizeReports } = await import("../tools/automation.js");
+  for (const mismatch of ["run", "digest", "html", "stale-receipt", "mode", "path"]) {
+    await temporary(async root => {
+      let fixture!: Awaited<ReturnType<typeof generatedHtmlFixture>>;
+      await generateReports(root, ["daily"], "binding-run", async () => {
+        fixture = await generatedHtmlFixture(root, "daily");
+        if (["stale-receipt", "mode", "path"].includes(mismatch)) {
+          const receiptFile = join(root, ".cache", "report-daily.json");
+          const receipt = JSON.parse(await readFile(receiptFile, "utf8"));
+          if (mismatch === "stale-receipt") receipt.generatedAt = "2020-01-01T00:00:00.000Z";
+          if (mismatch === "mode") receipt.mode = "weekly";
+          if (mismatch === "path") receipt.fileName = `../reports/${receipt.fileName}`;
+          await writeFile(receiptFile, JSON.stringify(receipt));
+        }
+        return 0;
+      });
+      const file = join(root, "reports", fixture.fileName);
+      if (mismatch === "digest") await writeFile(join(root, "reports", "latest-daily.txt"), "changed digest");
+      if (mismatch === "html") await writeFile(file, fixture.html.replace("מצב ההחזקות", "changed holdings"));
+      const before = await readFile(file, "utf8");
+      await finalizeReports(root, { AUTOMATION_RUN_ID: mismatch === "run" ? "other-run" : "binding-run", GITHUB_STEP_SUMMARY: join(root, "summary.md"), SEND_REPORT_TO_GEMINI: "true", GEMINI_MODEL: "gemini-test", GEMINI_API_KEY: "fixture-secret" }, async () => new Response(JSON.stringify({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "MUST NOT EMBED" }] } }] })));
+      assert.equal(await readFile(file, "utf8"), before, mismatch);
+    });
+  }
+});
 
 const deliveryAssets = [
   "app.js",
@@ -214,6 +290,7 @@ test("Gemini uses configured official REST endpoint, header, timeout and digest-
   assert.deepEqual(requestBody?.generationConfig, { maxOutputTokens: 1600, temperature: 0.2 });
   assert.equal(requestBody?.tools, undefined);
   assert.match(JSON.stringify(requestBody?.systemInstruction), /untrusted|instructions/i);
+  assert.match(JSON.stringify(requestBody?.systemInstruction), /portfolio status.*buy.*sell.*hold/i);
   assert.match(JSON.stringify(requestBody?.contents), /digest data/);
   assert.doesNotMatch(JSON.stringify(requestBody), /test-secret/);
 });

@@ -9,6 +9,45 @@ import { generateReport } from "../src/report.js";
 import type { AnalysisResult } from "../src/analysis.js";
 import { buildReportSummary, buildReportSummarySnapshot } from "../src/summary.js";
 import { PORTFOLIO, type HoldingDef } from "../src/config.js";
+import { buildBriefActions } from "../src/brief.js";
+
+test("brief actions preserve sell thresholds and explain weaker watch cautions without classifying missing funds", () => {
+  const input = reportInput();
+  const held = stock("DSCT.TA", 10);
+  held.price = 3600;
+  input.results = [held];
+  let actions = buildBriefActions(input);
+  assert.equal(actions.sell.length, 0);
+  assert.match(actions.watch.join(" "), /חלש/);
+  assert.doesNotMatch(actions.watch.join(" "), /סטופ הדוק/);
+  held.score = 50;
+  held.signals = ["שבירת רצף עולה"];
+  actions = buildBriefActions(input);
+  assert.equal(actions.sell.length, 0);
+  assert.match(actions.watch.join(" "), /סטופ הדוק/);
+  held.patterns = [{ name: "דובי", bias: "bearish" } as AnalysisResult["patterns"][number]];
+  actions = buildBriefActions(input);
+  assert.equal(actions.sell.length, 1);
+  assert.match(actions.sell[0], /צמצום לבדיקה/);
+  assert.equal(actions.watch.length, 0);
+  held.signals.push("קרוס דובי");
+  actions = buildBriefActions(input);
+  assert.match(actions.sell[0], /מכירה \/ יציאה לבדיקה/);
+  assert.equal(actions.missing.length, 2);
+  assert.ok(actions.missing.every(entry => entry.includes("ללא כיסוי טכני")));
+  assert.ok(actions.buy.every(entry => !entry.includes("DSCT.TA")));
+});
+
+test("brief labels sequence stop, risk stop, score and delta separately to prevent mixed-direction ambiguity", () => {
+  const input = reportInput();
+  input.results = [stock("DSCT.TA")];
+  const html = renderReportHtml(input);
+  const brief = html.slice(html.indexOf('id="portfolio-brief"'), html.indexOf('<nav class="section-nav"'));
+  assert.match(brief, /<dt>סטופ רצף<\/dt><dd[^>]*><bdi>91<\/bdi>/);
+  assert.match(brief, /<dt>סטופ סיכון<\/dt><dd[^>]*><bdi>לא זמין<\/bdi>/);
+  assert.match(brief, /<dt>ציון<\/dt><dd[^>]*><bdi>50<\/bdi>/);
+  assert.match(brief, /<dt>שינוי ציון<\/dt><dd[^>]*><bdi>לא זמין<\/bdi>/);
+});
 
 const testPortfolio: HoldingDef[] = [
   { symbol: "DSCT.TA", name: "בנק דיסקונט", entryPrice: 3314.74 },
@@ -167,6 +206,22 @@ test("summary uses existing pick filters, combined ranking, alternates and avail
   assert.match(summary, /שבועי לא זמין/);
 });
 
+test("full digest and detailed pick never recommend strengthening a holding with active caution or reduction signals", () => {
+  const held = stock("DSCT.TA", 70);
+  held.risk = { stop: 90, stopSource: "רצפים", riskPct: 10, target: 120, targetSource: "2R", rr: 2 };
+  const input: ReportHtmlInput = { ...reportInput(), results: [held],
+    horizons: new Map([[held.symbol, { weeklyScore: 70, weeklyRec: "קנייה", longTerm: null, combined: 95, alignment: "חלקית" }]]) };
+  assert.match(buildReportSummary(input), /חיזוק החזקה:/);
+  assert.match(renderReportHtml(input), /class="pick-strength"/);
+  for (const signals of [["שבירת רצף עולה"], ["שבירת רצף עולה", "קרוס דובי"]]) {
+    held.signals = signals;
+    const summary = buildReportSummary(input);
+    assert.doesNotMatch(summary, /חיזוק החזקה:/);
+    assert.doesNotMatch(renderReportHtml(input), /class="pick-strength"/);
+    assert.ok(!buildBriefActions(input).buy.length);
+  }
+});
+
 test("summary is deterministic and its saved portfolio is independent of later configuration edits", () => {
   const input = { ...reportInput(), results: [stock("DSCT.TA")] };
   const snapshot = buildReportSummarySnapshot(input);
@@ -222,6 +277,12 @@ test("daily and weekly summaries are persisted exactly as their HTML snapshots",
       const snapshot = snapshotOf(readFileSync(file, "utf8"));
       assert.equal(readFileSync(join(root, "reports", `latest-${mode}.txt`), "utf8"), `${snapshot.summary}\n`);
       assert.equal(snapshot.mode, mode);
+      const receipt = JSON.parse(readFileSync(join(root, ".cache", `report-${mode}.json`), "utf8"));
+      assert.equal(receipt.mode, mode);
+      assert.equal(receipt.generatedAt, snapshot.generatedAt);
+      assert.match(receipt.fileName, new RegExp(`^report-${mode}-2026-09-07\\.html$`));
+      assert.match(receipt.htmlHash, /^[a-f0-9]{64}$/);
+      assert.match(receipt.digestHash, /^[a-f0-9]{64}$/);
     }
     assert.ok(readFileSync(join(root, "reports", "latest-daily.txt"), "utf8").includes("יומי"));
   } finally {
