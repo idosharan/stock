@@ -195,7 +195,7 @@ test("Gemini-only probe checks the configured model and synthetic text without e
     assert.equal(init?.redirect, "error");
     if (init?.method === "GET") return Response.json({ name: "models/gemini-test", supportedGenerationMethods: ["generateContent"] });
     const body = JSON.parse(String(init?.body));
-    assert.deepEqual(body.generationConfig, { maxOutputTokens: 1600, temperature: 0.2 });
+    assert.deepEqual(body.generationConfig, { maxOutputTokens: 8192, temperature: 0.2 });
     const content = JSON.parse(body.contents[0].parts[0].text);
     assert.equal(content.mode, "daily");
     assert.match(content.digest, /SYNTHETIC_DIAGNOSTIC_ONLY/);
@@ -560,7 +560,7 @@ test("Gemini uses configured official REST endpoint, header, timeout and digest-
   assert.match(result!, /AI narrative/);
   assert.match(result!, /Bounded narrative/);
   assert.deepEqual(deadlines, [60_000]);
-  assert.deepEqual(requestBody?.generationConfig, { maxOutputTokens: 1600, temperature: 0.2 });
+  assert.deepEqual(requestBody?.generationConfig, { maxOutputTokens: 8192, temperature: 0.2 });
   assert.equal(requestBody?.tools, undefined);
   assert.match(JSON.stringify(requestBody?.systemInstruction), /untrusted|instructions/i);
   assert.match(JSON.stringify(requestBody?.systemInstruction), /portfolio status.*buy.*sell.*hold/i);
