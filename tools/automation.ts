@@ -20,8 +20,10 @@ export interface RunState {
   digests: Partial<Record<ReportMode, string>>;
   aiModes: ReportMode[];
   reports?: Partial<Record<ReportMode, ReportReceipt>>;
+  recovered?: ReportMode[];
 }
-type Execute = (executable: string, args: string[]) => Promise<number>;
+interface ProcessOutcome { code: number | null; timedOut: boolean }
+type Execute = (executable: string, args: string[]) => Promise<number | ProcessOutcome>;
 
 const allModes: ReportMode[] = ["daily", "weekly"];
 const digestLimit = 64_000;
@@ -72,10 +74,13 @@ async function readState(root: string, runId: string | undefined): Promise<RunSt
     for (const modes of [state.requested, state.completed, state.failed, state.aiModes]) {
       if (!Array.isArray(modes) || modes.length > 2 || modes.some(mode => !allModes.includes(mode))) return undefined;
     }
+    if (state.recovered !== undefined && (!Array.isArray(state.recovered) || state.recovered.length > 2
+      || state.recovered.some(mode => !allModes.includes(mode)))) return undefined;
     for (const mode of [...state.completed]) {
       if (await freshDigest(root, state, mode)) continue;
       state.completed = state.completed.filter(completed => completed !== mode);
       state.aiModes = state.aiModes.filter(completed => completed !== mode);
+      state.recovered = state.recovered?.filter(completed => completed !== mode);
       if (!state.failed.includes(mode)) state.failed.push(mode);
       delete state.digests[mode];
     }
@@ -174,6 +179,25 @@ async function updateReportNarrative(root: string, state: RunState, mode: Report
   } catch { return false; }
 }
 
+export function superviseReportProcess(root: string, executable: string, args: string[], launch: typeof spawn = spawn): Promise<ProcessOutcome> {
+  return new Promise(resolveExit => {
+    const child = launch(executable, args, { cwd: root, stdio: "inherit", shell: false });
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = child.kill("SIGKILL");
+      console.warn("Report process reached the 6-minute limit; stopping it and checking saved outputs.");
+    }, 360_000);
+    child.once("error", () => {
+      clearTimeout(deadline);
+      resolveExit({ code: 1, timedOut: false });
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(deadline);
+      resolveExit({ code, timedOut: timedOut && signal === "SIGKILL" });
+    });
+  });
+}
+
 export async function generateReports(root: string, modes: ReportMode[], runId: string, execute?: Execute): Promise<RunState> {
   if (!runId || !modes.length || new Set(modes).size !== modes.length || modes.some(mode => !allModes.includes(mode))) throw new Error("Invalid generation request");
   await mkdir(join(root, "reports"), { recursive: true });
@@ -184,18 +208,24 @@ export async function generateReports(root: string, modes: ReportMode[], runId: 
     await removeFile(receiptPath(root, mode));
   }
   await saveState(root, state);
-  const run: Execute = execute ?? ((executable, args) => new Promise(resolveExit => {
-    const child = spawn(executable, args, { cwd: root, stdio: "inherit", shell: false });
-    child.once("error", () => resolveExit(1));
-    child.once("exit", code => resolveExit(code ?? 1));
-  }));
+  const run: Execute = execute ?? ((executable, args) => superviseReportProcess(root, executable, args));
   for (const mode of modes) {
     try {
-      const code = await run(process.execPath, ["--import", "tsx", join(root, "src", "index.ts"), `--mode=${mode}`]);
-      if (code !== 0) throw new Error("Generator failed");
-      state.digests[mode] = hash(await readDigest(root, mode));
-      state.completed.push(mode);
-      await captureReport(root, state, mode);
+      const outcome = await run(process.execPath, ["--import", "tsx", join(root, "src", "index.ts"), `--mode=${mode}`]);
+      const code = typeof outcome === "number" ? outcome : outcome.code;
+      const timedOut = typeof outcome !== "number" && outcome.timedOut && code === null;
+      if (code !== 0 && !timedOut) throw new Error("Generator failed");
+      const candidate: RunState = { ...state, digests: { ...state.digests, [mode]: hash(await readDigest(root, mode)) },
+        completed: [...state.completed, mode], reports: { ...state.reports } };
+      await captureReport(root, candidate, mode);
+      if (timedOut && !candidate.reports?.[mode]) throw new Error("No verified report after process timeout");
+      state.digests = candidate.digests;
+      state.completed = candidate.completed;
+      state.reports = candidate.reports;
+      if (timedOut) {
+        state.recovered = [...(state.recovered ?? []), mode];
+        console.warn(`${mode}: verified report recovered after the 6-minute process limit; continuing.`);
+      }
     } catch {
       state.failed.push(mode);
       await removeFile(digestPath(root, mode));
@@ -345,6 +375,7 @@ function statusText(state: RunState | undefined, env: FormEnvironment): string {
   return [
     `Workflow status: ${env.WORKFLOW_STATUS || (incomplete ? "failure or not generated" : "success")}`,
     `Generated in this run: ${state?.completed.join(", ") || "none"}`,
+    `Recovered after 6-minute process limit: ${state?.recovered?.join(", ") || "none"}`,
     `Failed or incomplete: ${state?.requested.filter(mode => !state.completed.includes(mode)).join(", ") || (state ? "none" : "generation not confirmed")}`,
     "The report archive and other summary files may be retained from previous runs; only the fresh digests below belong to this run. Check each report's data timestamps, not just its filename.",
     "Artifact access follows repository access. Public repositories do not protect portfolio privacy. Pages publication is separately opt-in and may be public even for a private repository.",
