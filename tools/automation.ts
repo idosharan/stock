@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import timers from "node:timers/promises";
 import { changeFromEnvironment, plainTextBlock, type FormEnvironment } from "./manage-instruments.js";
 
 type ReportMode = "daily" | "weekly";
@@ -198,6 +199,23 @@ async function boundedResponse(response: Response): Promise<string> {
   }
 }
 
+async function fetchNarrativeResponse(url: string, init: RequestInit, fetcher: typeof fetch): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    init.signal?.throwIfAborted();
+    const response = await fetcher(url, init);
+    if (response.status !== 503 || attempt >= 2) return response;
+    const backoffMs = 2000 * 2 ** attempt + Math.floor(Math.random() * 500);
+    const retryAfter = response.headers.get("retry-after")?.trim();
+    const retryAfterMs = retryAfter
+      ? /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()
+      : 0;
+    if (retryAfterMs > narrativeTimeoutMs) return response;
+    const waitMs = Math.max(backoffMs, Number.isFinite(retryAfterMs) ? retryAfterMs : 0);
+    await response.body?.cancel().catch(() => undefined);
+    await timers.setTimeout(waitMs, undefined, { signal: init.signal ?? undefined });
+  }
+}
+
 export async function requestNarrative(
   mode: ReportMode, digest: string, env: FormEnvironment, fetcher: typeof fetch = fetch,
   onFailure?: (code: NarrativeFailure, httpStatus?: number) => void,
@@ -217,7 +235,7 @@ export async function requestNarrative(
   if (!digest.trim()) return fail("empty_digest");
   if (Buffer.byteLength(digest, "utf8") > digestLimit) return fail("digest_too_large");
   try {
-    const response = await fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    const response = await fetchNarrativeResponse(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(narrativeTimeoutMs),
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
@@ -225,7 +243,7 @@ export async function requestNarrative(
         contents: [{ role: "user", parts: [{ text: JSON.stringify({ mode, digest }) }] }],
         generationConfig: { maxOutputTokens: 1600, temperature: 0.2 },
       }),
-    });
+    }, fetcher);
     if (!response.ok) {
       if (Number.isInteger(response.status) && response.status >= 100 && response.status <= 599) httpStatus = response.status;
       await response.body?.cancel().catch(() => undefined);
