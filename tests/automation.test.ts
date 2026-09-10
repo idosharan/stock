@@ -564,6 +564,9 @@ test("Gemini uses configured official REST endpoint, header, timeout and digest-
   assert.equal(requestBody?.tools, undefined);
   assert.match(JSON.stringify(requestBody?.systemInstruction), /untrusted|instructions/i);
   assert.match(JSON.stringify(requestBody?.systemInstruction), /portfolio status.*buy.*sell.*hold/i);
+  assert.match(JSON.stringify(requestBody?.systemInstruction), /geopolitical outlook/i);
+  assert.match(JSON.stringify(requestBody?.systemInstruction), /300 Hebrew words/);
+  assert.match(JSON.stringify(requestBody?.systemInstruction), /supplied market headlines|supplied headlines/i);
   assert.match(JSON.stringify(requestBody?.contents), /digest data/);
   assert.doesNotMatch(JSON.stringify(requestBody), /test-secret/);
 });

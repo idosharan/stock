@@ -7,6 +7,8 @@ import test, { afterEach, beforeEach } from "node:test";
 import { renderReportHtml, type ReportHtmlInput } from "../src/html.js";
 import { generateReport } from "../src/report.js";
 import type { AnalysisResult } from "../src/analysis.js";
+import type { IndexAnalysis } from "../src/indices.js";
+import type { NewsItem } from "../src/news.js";
 import { buildReportSummary, buildReportSummarySnapshot } from "../src/summary.js";
 import { PORTFOLIO, type HoldingDef } from "../src/config.js";
 import { buildBriefActions } from "../src/brief.js";
@@ -77,6 +79,47 @@ test("brief labels sequence stop, risk stop, score and delta separately to preve
   assert.match(brief, /<dt>סטופ סיכון<\/dt><dd[^>]*><bdi>לא זמין<\/bdi>/);
   assert.match(brief, /<dt>ציון<\/dt><dd[^>]*><bdi>50<\/bdi>/);
   assert.match(brief, /<dt>שינוי ציון<\/dt><dd[^>]*><bdi>לא זמין<\/bdi>/);
+});
+
+function indexEntry(symbol: string, name: string, stance: IndexAnalysis["stance"] = "חיובי", trendUp = true, score = 60): IndexAnalysis {
+  return { symbol, name, region: "ישראל", price: 2000, changePct: 0.5, score, stance, recommendation: "מעקב",
+    signals: [], indicators: { rsi: 55, macdHist: null, adx: null, roc: null, atrPct: null, trendUp, aboveSmaLong: true } };
+}
+
+function headline(source: string, title: string, ageHours: number | null): NewsItem {
+  return { source, title, sentiment: 0, ageHours };
+}
+
+test("quote-only holdings expose their reference index in the snapshot, brief card and missing group", () => {
+  const input = reportInput();
+  input.results = [stock("DSCT.TA")];
+  input.indices = [indexEntry("207.TA", "ת\"א ביטחוניות", "שלילי", false, 42)];
+  const html = renderReportHtml(input);
+  const defense = snapshotOf(html).portfolio.find((entry: { taseNumber?: string }) => entry.taseNumber === "1233170");
+  assert.deepEqual(defense.referenceIndex, { symbol: "207.TA", name: "ת\"א ביטחוניות", stance: "שלילי", trendUp: false, score: 42 });
+  assert.equal(snapshotOf(html).portfolio.find((entry: { taseNumber?: string }) => entry.taseNumber === "1145903").referenceIndex, undefined);
+  const brief = html.slice(html.indexOf('id="portfolio-brief"'), html.indexOf('<nav class="section-nav"'));
+  assert.match(brief, /מדד ייחוס ת&quot;א ביטחוניות: שלילי, מגמה לא חיובית — המדד, לא הקרן/);
+  const actions = buildBriefActions(input);
+  assert.match(actions.missing.find(line => line.includes("1233170"))!, /ללא כיסוי טכני.*מדד ייחוס ת"א ביטחוניות: שלילי, מגמה לא חיובית/);
+  assert.doesNotMatch(actions.missing.find(line => line.includes("1145903"))!, /מדד ייחוס/);
+  assert.match(buildReportSummary(input), /מדד ייחוס 207\.TA: שלילי; מגמת ממוצעים לא חיובית/);
+});
+
+test("digest lists bounded fresh market headlines with sanitized titles and an explicit empty state", () => {
+  const input = reportInput();
+  input.results = [stock("DSCT.TA")];
+  input.marketNews = [
+    headline("ישן", "כותרת ישנה", null),
+    ...Array.from({ length: 13 }, (_, index) => headline(`מקור${index}`, `כותרת <b>מס ${index}</b> ${"ארוכה ".repeat(30)}`, index)),
+  ];
+  const digest = buildReportSummary(input);
+  assert.match(digest, /===== כותרות שוק אחרונות =====/);
+  assert.match(digest, /מקור0 \| לפני 0 שעות \| כותרת מס 0/);
+  assert.equal(digest.match(/\| כותרת מס /g)?.length, 12);
+  assert.doesNotMatch(digest, /כותרת ישנה|<b>/);
+  for (const line of digest.split("\n").filter(line => line.includes("| כותרת מס "))) assert.ok(line.length <= 170, line);
+  assert.match(buildReportSummary({ ...reportInput(), results: [stock("DSCT.TA")] }), /===== כותרות שוק אחרונות =====\nאין כותרות זמינות\./);
 });
 
 const testPortfolio: HoldingDef[] = [
@@ -370,7 +413,7 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
         return [];
       },
       fetchInvestingPrice: async url => { if (stalled === 'etf') return new Promise(() => {}); if (url === energy.investingUrl) return 4502; throw new Error('quote unavailable'); },
-      fetchTasePrice: async () => null,
+      fetchTasePrice: async paper => paper === '1233170' ? 4800 : null,
     }});
     const news = await import(${JSON.stringify(`${source}news.ts`)});
     mock.module(${JSON.stringify(`${source}news.ts`)}, { namedExports: { ...news, fetchAllNews: async () => stalled === 'news' ? new Promise(() => {}) : [] }});
@@ -435,7 +478,8 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
       assert.deepEqual(run.health.missingSymbols, ["SHORT.TA", "FAIL.TA"]);
       assert.match(run.health.failures["SHORT.TA"], /אין מספיק נתונים/);
       assert.match(run.health.failures["FAIL.TA"], /HTTP 429/);
-      assert.match(run.health.failures["1233170"], /quote unavailable/);
+      assert.equal(run.health.failures["1233170"], undefined);
+      assert.match(run.snapshot.summary, /1233170[^\n]*4800/);
       assert.match(run.snapshot.summary, /איסוף חלקי/);
       assert.match(run.snapshot.summary, /1145903.*4502/);
       assert.deepEqual(run.snapshot.dataHealth, run.health);
@@ -449,6 +493,10 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
       assert.ok(Object.values(partial.health.failures).some(reason => /זמן/.test(String(reason))), partial.scenario);
     }
     assert.deepEqual(fixture.partials.find(partial => partial.scenario === "indices").indices, ["^GOOD", "^LATER"]);
+    const etf = fixture.partials.find(partial => partial.scenario === "etf");
+    assert.equal(etf.health.failures["1233170"], undefined);
+    assert.equal(etf.health.failures["1233170:tase"], undefined);
+    assert.match(String(etf.health.failures["1145903"]), /זמן/);
     const limited = fixture.partials.find(partial => partial.scenario === "deadline");
     assert.equal(limited.health.analyzed, 1);
     assert.equal(limited.health.missingSymbols.length, 14);

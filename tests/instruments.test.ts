@@ -15,6 +15,15 @@ function fixture(): InstrumentConfig {
     stockSectors: { "DSCT.TA": "Banks" } };
 }
 
+test("S&P 500 Energy is an analyzed world index and a supported reference index", () => {
+  assert.ok(WORLD_INDICES.some(index => index.symbol === "^GSPE" && index.name.includes("Energy")));
+  assert.ok(instruments.SUPPORTED_TRIGGER_INDICES.includes("^GSPE"));
+  const config = fixture();
+  config.portfolio.push({ name: "קסם אנרגיה", entryPrice: 4502, taseNumber: "1145903",
+    investingUrl: "https://www.investing.com/etfs/ksm-4d-sp-energy", triggerIndex: "^GSPE" });
+  assert.deepEqual(validateInstrumentConfig(config), config);
+});
+
 test("configuration rejects malformed, duplicate and unsafe records", () => {
   const valid = fixture();
   assert.deepEqual(validateInstrumentConfig(valid), valid);
