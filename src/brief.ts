@@ -27,7 +27,8 @@ export function buildBriefActions(input: ReportHtmlInput): { buy: string[]; sell
     const result = holding.symbol ? bySymbol.get(holding.symbol) : undefined;
     if (!result) {
       const reference = holding.triggerIndex ? input.indices.find(entry => entry.symbol === holding.triggerIndex) : undefined;
-      missing.push(`${holding.name} (${holding.symbol ?? holding.taseNumber ?? ""}) · ללא כיסוי טכני; אין סיווג קנייה, מכירה או החזקה${reference ? ` · מדד ייחוס ${reference.name}: ${reference.stance}, מגמה ${reference.indicators.trendUp ? "חיובית" : "לא חיובית"} — המדד, לא הקרן` : ""}`);
+      if (reference) watch.push(`${holding.name} (${holding.symbol ?? holding.taseNumber ?? ""}) · מעקב לפי מדד ייחוס ${reference.name}: ${reference.stance}, מגמה ${reference.indicators.trendUp ? "חיובית" : "לא חיובית"}, ציון ${metric(reference.score)} — המדד, לא הקרן; אין ניתוח של הקרן עצמה`);
+      else missing.push(`${holding.name} (${holding.symbol ?? holding.taseNumber ?? ""}) · ללא כיסוי טכני; אין סיווג קנייה, מכירה או החזקה`);
       continue;
     }
     if (sells.has(result.symbol)) continue;
@@ -44,11 +45,13 @@ export function renderPortfolioBrief(input: ReportHtmlInput, snapshot: ReportSum
   const holdings = snapshot.portfolio.map(holding => {
     const units = holding.symbol && !holding.symbol.endsWith(".TA") ? "דולר" : "אגורות";
     const cell = (label: string, value: string, tone = ""): string => `<div><dt>${label}</dt><dd class="${tone}"><bdi>${escape(value)}</bdi></dd></div>`;
+    const reference = holding.referenceIndex;
+    const referenceText = reference ? ` · לפי מדד הייחוס ${reference.name}: ${reference.stance}, מגמה ${reference.trendUp ? "חיובית" : "לא חיובית"}, ציון ${metric(reference.score)}${reference.changePct != null ? `, שינוי ${signed(reference.changePct)}%` : ""} — המדד, לא הקרן` : "";
     return `<li class="brief-holding"><div class="brief-holding-name"><strong>${escape(holding.name)}</strong><bdi>${escape(holding.symbol ?? holding.taseNumber ?? "")}</bdi></div>
       <dl>${cell(`מחיר · ${units}`, metric(holding.price))}${cell("רווח / הפסד", holding.returnPct == null ? "לא זמין" : `${signed(holding.returnPct)}%`, holding.returnPct == null ? "" : holding.returnPct >= 0 ? "brief-positive" : "brief-negative")}
       ${cell("ציון", metric(holding.score))}${cell("שינוי ציון", holding.scoreDelta == null ? "לא זמין" : signed(holding.scoreDelta))}
       ${cell("סטופ רצף", metric(holding.sequenceStop))}${cell("סטופ סיכון", metric(holding.stop))}</dl>
-      ${holding.coverage !== "analyzed" ? `<p class="brief-coverage">${holding.coverage === "missing" ? "מחיר חסר" : "מחיר בלבד"} · ללא כיסוי טכני${holding.referenceIndex ? ` · מדד ייחוס ${escape(holding.referenceIndex.name)}: ${escape(holding.referenceIndex.stance)}, מגמה ${holding.referenceIndex.trendUp ? "חיובית" : "לא חיובית"} — המדד, לא הקרן` : ""}</p>` : ""}</li>`;
+      ${holding.coverage !== "analyzed" ? `<p class="brief-coverage">${holding.coverage === "missing" ? "מחיר חסר" : "מחיר בלבד"} · ללא כיסוי טכני${escape(referenceText)}</p>` : ""}</li>`;
   }).join("");
   return `<section id="portfolio-brief" class="executive portfolio-brief" aria-labelledby="brief-title">
     <div class="section-heading"><h2 id="brief-title">התיק שלי · סיכום החלטות</h2><span class="brief-source">למועד הדוח</span></div>

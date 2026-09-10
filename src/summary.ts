@@ -26,7 +26,7 @@ export interface HoldingSummary {
   stop?: number;
   coverage: "analyzed" | "price-only" | "missing";
   /** מצב מדד הייחוס לקרנות ללא ניתוח — המדד עצמו, לא הקרן. */
-  referenceIndex?: { symbol: string; name: string; stance: string; trendUp: boolean; score?: number };
+  referenceIndex?: { symbol: string; name: string; stance: string; trendUp: boolean; score?: number; changePct?: number };
   alerts: string[];
 }
 
@@ -127,7 +127,7 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
       ...(positive(result?.sequenceStop) ? { sequenceStop: result.sequenceStop } : {}),
       ...(positive(result?.risk?.stop) ? { stop: result.risk.stop } : {}),
       coverage: result ? "analyzed" : positive(price) ? "price-only" : "missing",
-      ...(reference ? { referenceIndex: { symbol: reference.symbol, name: plain(reference.name), stance: plain(reference.stance), trendUp: reference.indicators.trendUp, ...(finite(reference.score) ? { score: reference.score } : {}) } } : {}),
+      ...(reference ? { referenceIndex: { symbol: reference.symbol, name: plain(reference.name), stance: plain(reference.stance), trendUp: reference.indicators.trendUp, ...(finite(reference.score) ? { score: reference.score } : {}), ...(finite(reference.changePct) ? { changePct: reference.changePct } : {}) } } : {}),
       alerts: holdingAlerts(holding, result, price, input),
     };
   });
@@ -152,7 +152,7 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
     }
     if (definition.triggerIndex) {
       const benchmark = input.indices.find((entry) => entry.symbol === definition.triggerIndex);
-      parts.push(`מדד ייחוס ${plain(definition.triggerIndex)}: ${benchmark ? `${plain(benchmark.stance)}; מגמת ממוצעים ${benchmark.indicators.trendUp ? "חיובית" : "לא חיובית"}` : "אין נתונים"}; אינו ניתוח של הקרן`);
+      parts.push(`מדד ייחוס ${plain(definition.triggerIndex)}: ${benchmark ? `${plain(benchmark.stance)}; מגמת ממוצעים ${benchmark.indicators.trendUp ? "חיובית" : "לא חיובית"}; ציון ${number(benchmark.score)}${finite(benchmark.changePct) ? `; שינוי ${signed(benchmark.changePct)}%` : ""}` : "אין נתונים"}; אינו ניתוח של הקרן`);
     }
     lines.push(parts.join(" | "));
   }
