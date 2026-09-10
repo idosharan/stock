@@ -551,7 +551,7 @@
       "sector": "בנקים"
     },
     {
-      "name": "קסם S&P Energy ETF",
+      "name": "GSPE",
       "entryPrice": 4502,
       "note": "נייר 1145903",
       "triggerIndex": "^GSPE",
