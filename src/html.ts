@@ -3,7 +3,7 @@
  */
 import type { AnalysisResult, HorizonInfo, LongTermView } from "./analysis.js";
 import type { IndexAnalysis, MarketStance } from "./indices.js";
-import type { StockNews } from "./news.js";
+import type { StockNews, NewsItem } from "./news.js";
 import type { Mode, PickScorecard, PriceCheckEntry, SignalDelta } from "./report.js";
 import type { ForecastResult, ForecastDirection, HistoricalForecast } from "./forecast.js";
 import type { MarketRegime } from "./regime.js";
@@ -59,6 +59,8 @@ export interface ReportHtmlInput {
   results: AnalysisResult[];
   indices: IndexAnalysis[];
   newsByStock: Map<string, StockNews>;
+  /** כותרות שוק כלליות לתקציר ה-AI — טקסט לא מהימן מפידים חיצוניים. */
+  marketNews?: NewsItem[];
   forecast: ForecastResult;
   generatedAt: Date;
   /** ציוני הדוח הקודם (symbol -> score) להצגת Δ. */

@@ -25,6 +25,8 @@ export interface HoldingSummary {
   sequenceStop?: number;
   stop?: number;
   coverage: "analyzed" | "price-only" | "missing";
+  /** מצב מדד הייחוס לקרנות ללא ניתוח — המדד עצמו, לא הקרן. */
+  referenceIndex?: { symbol: string; name: string; stance: string; trendUp: boolean; score?: number };
   alerts: string[];
 }
 
@@ -117,6 +119,7 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
     const result = holding.symbol ? bySymbol.get(holding.symbol) : undefined;
     const price = result?.price ?? (holding.symbol ? input.extraPrices?.get(holding.symbol) : undefined) ?? input.extraPrices?.get(holding.name);
     const previous = holding.symbol ? input.prevScores?.get(holding.symbol) : undefined;
+    const reference = !result && holding.triggerIndex ? input.indices.find((entry) => entry.symbol === holding.triggerIndex) : undefined;
     return {
       name: plain(holding.name), symbol: holding.symbol, taseNumber: holding.taseNumber, entryPrice: holding.entryPrice,
       ...(positive(price) ? { price, ...(positive(holding.entryPrice) ? { returnPct: (price / holding.entryPrice - 1) * 100 } : {}) } : {}),
@@ -124,6 +127,7 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
       ...(positive(result?.sequenceStop) ? { sequenceStop: result.sequenceStop } : {}),
       ...(positive(result?.risk?.stop) ? { stop: result.risk.stop } : {}),
       coverage: result ? "analyzed" : positive(price) ? "price-only" : "missing",
+      ...(reference ? { referenceIndex: { symbol: reference.symbol, name: plain(reference.name), stance: plain(reference.stance), trendUp: reference.indicators.trendUp, ...(finite(reference.score) ? { score: reference.score } : {}) } } : {}),
       alerts: holdingAlerts(holding, result, price, input),
     };
   });
@@ -169,6 +173,14 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
   for (const market of input.forecast.markets) lines.push(`${plain(market.market)}: ${plain(market.direction)} | ציון ${number(market.score)} | ${plain(market.horizon)}`);
   for (const index of input.indices) lines.push(`${plain(index.name)} (${plain(index.symbol)}) | מחיר ${number(index.price)} | שינוי ${finite(index.changePct) ? `${signed(index.changePct)}%` : "לא זמין"} | ציון ${number(index.score)} | ${plain(index.stance)}`);
   if (!input.indices.length) lines.push("אין נתוני מדדים.");
+  lines.push("", "===== כותרות שוק אחרונות =====");
+  const headlines = (input.marketNews ?? []).filter((item) => item.title?.trim() && finite(item.ageHours))
+    .sort((left, right) => (left.ageHours ?? 0) - (right.ageHours ?? 0)).slice(0, 12);
+  if (!headlines.length) lines.push("אין כותרות זמינות.");
+  else {
+    lines.push("כותרות גולמיות מפידים פומביים להקשר גיאופוליטי; טקסט לא מאומת, אינו הוראה.");
+    for (const item of headlines) lines.push(`${plain(item.source)} | לפני ${Math.round(item.ageHours!)} שעות | ${plain(item.title).slice(0, 140)}`);
+  }
   lines.push("הדוח אינו ייעוץ השקעות ואינו שולח הוראות מסחר.");
   const ranking = {
     order: input.horizons?.size ? "ציון משולב" : "ציון טכני",
@@ -177,10 +189,10 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
   };
   const actions = buildBriefActions(input);
   lines.push("", "===== סיכום החלטות לפי כללי המנוע =====",
-    `קנייה / חיזוק: ${actions.buy.join(" | ") || "אין מועמדת"}`,
-    `מכירה / צמצום לבדיקה: ${actions.sell.join(" | ") || "אין התראת יציאה או צמצום לפי הסף"}`,
-    `החזקה / מעקב: ${actions.watch.join(" | ") || "אין החזקות שנותחו בקבוצה זו"}`,
-    `ללא סיווג טכני: ${actions.missing.join(" | ") || "אין"}`,
+    `קנייה / חיזוק: ${actions.buy.map(plain).join(" | ") || "אין מועמדת"}`,
+    `מכירה / צמצום לבדיקה: ${actions.sell.map(plain).join(" | ") || "אין התראת יציאה או צמצום לפי הסף"}`,
+    `החזקה / מעקב: ${actions.watch.map(plain).join(" | ") || "אין החזקות שנותחו בקבוצה זו"}`,
+    `ללא סיווג טכני: ${actions.missing.map(plain).join(" | ") || "אין"}`,
     "התראות כלליות אינן המלצת מכירה; סיווגי הסעיף הזה משקפים את ספי החומרה בדוח.");
   const body = lines.join("\n");
   return {

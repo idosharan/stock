@@ -273,18 +273,29 @@ export async function runAnalysis(
     for (const h of invHoldings) {
       const identifier = h.taseNumber ?? h.name;
       dataHealth.warnings.push(`${identifier}: מחיר בלבד, ללא ניתוח טכני; זמן הציטוט אינו מסופק.`);
+      let price: number | null = null;
+      let failure: string | undefined;
       try {
-        const price = await collection.run(identifier, () => fetchInvestingPrice(h.investingUrl!), null);
-        if (price != null && Number.isFinite(price) && price > 0) {
-          extraPrices.set(h.name, price);
-          log(`   ✅ ${h.name}: ${price.toLocaleString("he-IL")}`);
-        } else {
-          dataHealth.failures[identifier] ??= "לא התקבל מחיר מ-investing.com";
-          log(`   ⚠️  ${h.name}: לא התקבל מחיר מ-investing.com.`);
-        }
+        price = await collection.run(identifier, () => fetchInvestingPrice(h.investingUrl!), null);
       } catch (error) {
-        dataHealth.failures[identifier] = (error as Error).message;
-        log(`   ⚠️  ${h.name}: ${(error as Error).message}`);
+        failure = (error as Error).message;
+      }
+      if (!(price != null && Number.isFinite(price) && price > 0) && h.taseNumber && !collection.expired) {
+        log(`   🔁 ${h.name}: מנסה מחיר לפי מספר נייר ${h.taseNumber} מאתר הבורסה...`);
+        try {
+          price = await collection.run(`${identifier}:tase`, () => fetchTasePrice(h.taseNumber!), null);
+        } catch (error) {
+          failure = failure ? `${failure}; גם אתר הבורסה נכשל: ${(error as Error).message}` : (error as Error).message;
+        }
+      }
+      if (price != null && Number.isFinite(price) && price > 0) {
+        extraPrices.set(h.name, price);
+        delete dataHealth.failures[identifier];
+        delete dataHealth.failures[`${identifier}:tase`];
+        log(`   ✅ ${h.name}: ${price.toLocaleString("he-IL")}`);
+      } else {
+        dataHealth.failures[identifier] ??= failure ?? "לא התקבל מחיר מ-investing.com או מאתר הבורסה";
+        log(`   ⚠️  ${h.name}: לא התקבל מחיר (investing ומספר נייר).`);
       }
       if (!collection.expired) await sleep(400);
     }

@@ -26,7 +26,8 @@ export function buildBriefActions(input: ReportHtmlInput): { buy: string[]; sell
   for (const holding of PORTFOLIO) {
     const result = holding.symbol ? bySymbol.get(holding.symbol) : undefined;
     if (!result) {
-      missing.push(`${holding.name} (${holding.symbol ?? holding.taseNumber ?? ""}) · ללא כיסוי טכני; אין סיווג קנייה, מכירה או החזקה`);
+      const reference = holding.triggerIndex ? input.indices.find(entry => entry.symbol === holding.triggerIndex) : undefined;
+      missing.push(`${holding.name} (${holding.symbol ?? holding.taseNumber ?? ""}) · ללא כיסוי טכני; אין סיווג קנייה, מכירה או החזקה${reference ? ` · מדד ייחוס ${reference.name}: ${reference.stance}, מגמה ${reference.indicators.trendUp ? "חיובית" : "לא חיובית"} — המדד, לא הקרן` : ""}`);
       continue;
     }
     if (sells.has(result.symbol)) continue;
@@ -47,7 +48,7 @@ export function renderPortfolioBrief(input: ReportHtmlInput, snapshot: ReportSum
       <dl>${cell(`מחיר · ${units}`, metric(holding.price))}${cell("רווח / הפסד", holding.returnPct == null ? "לא זמין" : `${signed(holding.returnPct)}%`, holding.returnPct == null ? "" : holding.returnPct >= 0 ? "brief-positive" : "brief-negative")}
       ${cell("ציון", metric(holding.score))}${cell("שינוי ציון", holding.scoreDelta == null ? "לא זמין" : signed(holding.scoreDelta))}
       ${cell("סטופ רצף", metric(holding.sequenceStop))}${cell("סטופ סיכון", metric(holding.stop))}</dl>
-      ${holding.coverage !== "analyzed" ? `<p class="brief-coverage">${holding.coverage === "missing" ? "מחיר חסר" : "מחיר בלבד"} · ללא כיסוי טכני</p>` : ""}</li>`;
+      ${holding.coverage !== "analyzed" ? `<p class="brief-coverage">${holding.coverage === "missing" ? "מחיר חסר" : "מחיר בלבד"} · ללא כיסוי טכני${holding.referenceIndex ? ` · מדד ייחוס ${escape(holding.referenceIndex.name)}: ${escape(holding.referenceIndex.stance)}, מגמה ${holding.referenceIndex.trendUp ? "חיובית" : "לא חיובית"} — המדד, לא הקרן` : ""}</p>` : ""}</li>`;
   }).join("");
   return `<section id="portfolio-brief" class="executive portfolio-brief" aria-labelledby="brief-title">
     <div class="section-heading"><h2 id="brief-title">התיק שלי · סיכום החלטות</h2><span class="brief-source">למועד הדוח</span></div>

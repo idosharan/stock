@@ -146,6 +146,7 @@ export async function generateReport(input: ReportInput): Promise<string> {
     results,
     indices,
     newsByStock,
+    marketNews: allNews,
     forecast,
     generatedAt,
     prevScores,

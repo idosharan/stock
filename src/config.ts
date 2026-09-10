@@ -178,6 +178,7 @@ export const WORLD_INDICES: IndexDef[] = [
   { symbol: "^NDX", name: "Nasdaq 100", region: "ארה\"ב" },
   { symbol: "^RUT", name: "Russell 2000", region: "ארה\"ב" },
   { symbol: "^VIX", name: "VIX (מדד הפחד)", region: "ארה\"ב" },
+  { symbol: "^GSPE", name: "S&P 500 Energy", region: "ארה\"ב" },
   // ישראל
   { symbol: "TA35.TA", name: "ת\"א 35", region: "ישראל" },
   { symbol: "TA90.TA", name: "ת\"א 90", region: "ישראל" },

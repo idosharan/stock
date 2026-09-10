@@ -29,7 +29,7 @@ export interface InstrumentChange {
 }
 
 export const SUPPORTED_TRIGGER_INDICES: readonly string[] = Object.freeze([
-  "^GSPC", "^DJI", "^IXIC", "^NDX", "^RUT", "^VIX", "TA35.TA", "TA90.TA", "207.TA",
+  "^GSPC", "^DJI", "^IXIC", "^NDX", "^RUT", "^VIX", "^GSPE", "TA35.TA", "TA90.TA", "207.TA",
   "^GDAXI", "^FTSE", "^FCHI", "^STOXX50E", "^N225", "^HSI", "000001.SS", "^KS11",
 ]);
 
