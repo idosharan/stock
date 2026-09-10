@@ -90,20 +90,25 @@ function headline(source: string, title: string, ageHours: number | null): NewsI
   return { source, title, sentiment: 0, ageHours };
 }
 
-test("quote-only holdings expose their reference index in the snapshot, brief card and missing group", () => {
+test("holdings without fund data are tracked by their reference index data instead of staying unclassified", () => {
   const input = reportInput();
   input.results = [stock("DSCT.TA")];
   input.indices = [indexEntry("207.TA", "ת\"א ביטחוניות", "שלילי", false, 42)];
   const html = renderReportHtml(input);
   const defense = snapshotOf(html).portfolio.find((entry: { taseNumber?: string }) => entry.taseNumber === "1233170");
-  assert.deepEqual(defense.referenceIndex, { symbol: "207.TA", name: "ת\"א ביטחוניות", stance: "שלילי", trendUp: false, score: 42 });
+  assert.deepEqual(defense.referenceIndex, { symbol: "207.TA", name: "ת\"א ביטחוניות", stance: "שלילי", trendUp: false, score: 42, changePct: 0.5 });
   assert.equal(snapshotOf(html).portfolio.find((entry: { taseNumber?: string }) => entry.taseNumber === "1145903").referenceIndex, undefined);
   const brief = html.slice(html.indexOf('id="portfolio-brief"'), html.indexOf('<nav class="section-nav"'));
-  assert.match(brief, /מדד ייחוס ת&quot;א ביטחוניות: שלילי, מגמה לא חיובית — המדד, לא הקרן/);
+  assert.match(brief, /לפי מדד הייחוס ת&quot;א ביטחוניות: שלילי, מגמה לא חיובית, ציון 42, שינוי \+0.5% — המדד, לא הקרן/);
   const actions = buildBriefActions(input);
-  assert.match(actions.missing.find(line => line.includes("1233170"))!, /ללא כיסוי טכני.*מדד ייחוס ת"א ביטחוניות: שלילי, מגמה לא חיובית/);
+  assert.equal(actions.missing.find(line => line.includes("1233170")), undefined);
+  const tracked = actions.watch.find(line => line.includes("1233170"));
+  assert.match(tracked!, /מעקב לפי מדד ייחוס ת"א ביטחוניות: שלילי, מגמה לא חיובית, ציון 42 — המדד, לא הקרן/);
+  assert.match(actions.missing.find(line => line.includes("1145903"))!, /ללא כיסוי טכני/);
   assert.doesNotMatch(actions.missing.find(line => line.includes("1145903"))!, /מדד ייחוס/);
-  assert.match(buildReportSummary(input), /מדד ייחוס 207\.TA: שלילי; מגמת ממוצעים לא חיובית/);
+  const digest = buildReportSummary(input);
+  assert.match(digest, /מדד ייחוס 207\.TA: שלילי; מגמת ממוצעים לא חיובית; ציון 42; שינוי \+0.5%; אינו ניתוח של הקרן/);
+  assert.match(digest, /החזקה \/ מעקב: [^\n]*מעקב לפי מדד ייחוס/);
 });
 
 test("digest lists bounded fresh market headlines with sanitized titles and an explicit empty state", () => {
