@@ -558,6 +558,12 @@
       "taseNumber": "1145903",
       "investingUrl": "https://www.investing.com/etfs/ksm-4d-sp-energy",
       "sector": "אנרגיה"
+    },
+    {
+      "name": "בזן",
+      "entryPrice": 240.9,
+      "sector": "אנרגיה",
+      "symbol": "ORL.TA"
     }
   ],
   "stockSectors": {
@@ -596,6 +602,7 @@
     "MVNE.TA": "נדל\"ן",
     "MISH.TA": "נדל\"ן",
     "AURA.TA": "נדל\"ן",
-    "AFHL.TA": "נדל\"ן"
+    "AFHL.TA": "נדל\"ן",
+    "ORL.TA": "אנרגיה"
   }
 }
