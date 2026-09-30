@@ -418,6 +418,7 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
         return [];
       },
       fetchInvestingPrice: async url => { if (stalled === 'etf') return new Promise(() => {}); if (url === energy.investingUrl) return 4502; throw new Error('quote unavailable'); },
+      fetchBizportalQuote: async () => null,
       fetchTasePrice: async paper => paper === '1233170' ? 4800 : null,
     }});
     const news = await import(${JSON.stringify(`${source}news.ts`)});

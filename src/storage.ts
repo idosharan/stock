@@ -81,6 +81,8 @@ export interface CandleCacheDocument {
   symbol: string;
   days: number;
   fetchedAt: number;
+  /** Epoch ms of the provider's last trade (Yahoo regularMarketTime), when known. */
+  quoteTime?: number;
   candles: PackedCandle[];
 }
 

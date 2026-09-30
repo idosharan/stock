@@ -94,6 +94,54 @@ export interface QuoteInfo {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Last-trade time (epoch ms) per symbol, as reported by the chart provider in this run. */
+const quoteTimes = new Map<string, number>();
+
+export function getQuoteTime(symbol: string): number | null {
+  return quoteTimes.get(symbol) ?? null;
+}
+
+export interface ExternalQuote {
+  price: number;
+  /** YYYY-MM-DD (optionally followed by " HH:MM", Israel time) as stated by the source. */
+  asOf: string | null;
+  source: string;
+}
+
+/**
+ * Last price from Bizportal by TASE security number (stocks and ETFs). Bizportal pages
+ * are server-rendered, unlike investing.com (Cloudflare 403) and TASE (Incapsula).
+ */
+export async function fetchBizportalQuote(securityNumber: string): Promise<ExternalQuote | null> {
+  if (!/^\d{5,10}$/.test(securityNumber)) return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await sleep(1200);
+    try {
+      const res = await httpFetch(`https://www.bizportal.co.il/tradedfund/quote/generalview/${securityNumber}`, {
+        headers: { "User-Agent": UA, Accept: "text/html", "Accept-Language": "he-IL,he;q=0.9" },
+      });
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
+        continue;
+      }
+      const html = await res.text();
+      const head = html.indexOf('class="paper_h1"');
+      if (head < 0) continue;
+      const m = /class="num">\s*([\d,]+(?:\.\d+)?)\s*</.exec(html.slice(head, head + 4000));
+      if (!m) continue;
+      const price = Number(m[1].replace(/,/g, ""));
+      if (!Number.isFinite(price) || price <= 0) continue;
+      const stamp = /id="last-deal-time">([\s\S]{0,200}?)<\/div>/.exec(html)?.[1].replace(/<[^>]+>/g, " ") ?? "";
+      const d = /(\d{2})\/(\d{2})\/(\d{4})/.exec(stamp);
+      const hm = /\b(\d{1,2}:\d{2})\b/.exec(stamp)?.[1];
+      return { price, asOf: d ? `${d[3]}-${d[2]}-${d[1]}${hm ? ` ${hm.padStart(5, "0")}` : ""}` : null, source: "Bizportal" };
+    } catch {
+      /* retry */
+    }
+  }
+  return null;
+}
+
 /* ----------------------- ניהול עוגייה + crumb ----------------------- */
 
 let cachedCookie: string | null = null;
@@ -286,6 +334,7 @@ async function readCandleCache(symbol: string, days: number): Promise<Candle[] |
     try { raw = readCachedCandles(store, symbol, days, CANDLE_CACHE.ttlMinutes); }
     finally { store.close(); }
     if (!raw) return null;
+    if (raw.quoteTime != null && Number.isFinite(raw.quoteTime)) quoteTimes.set(symbol, raw.quoteTime);
     return raw.candles.map(([d, o, h, l, c, v]) => ({
       date: new Date(d),
       open: o,
@@ -307,6 +356,7 @@ async function writeCandleCache(symbol: string, days: number, candles: Candle[])
       symbol,
       days,
       fetchedAt: Date.now(),
+      ...(quoteTimes.has(symbol) ? { quoteTime: quoteTimes.get(symbol) } : {}),
       candles: candles.map((c) => [
         c.date.toISOString(),
         c.open,
@@ -356,6 +406,7 @@ export async function fetchCandles(symbol: string, days: number): Promise<Candle
   const meta = result.meta ?? {};
   const px: number | undefined = meta.regularMarketPrice;
   const t: number | undefined = meta.regularMarketTime;
+  if (t != null && Number.isFinite(t)) quoteTimes.set(symbol, t * 1000);
   if (px != null && t != null) {
     const metaDate = new Date(t * 1000);
     const lastDate = candles.length ? candles[candles.length - 1].date : null;

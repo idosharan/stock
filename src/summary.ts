@@ -19,6 +19,7 @@ export interface HoldingSummary {
   taseNumber?: string;
   entryPrice: number;
   price?: number;
+  quotedAt?: string;
   returnPct?: number;
   score?: number;
   scoreDelta?: number;
@@ -49,6 +50,36 @@ const positive = (value: unknown): value is number => finite(value) && value > 0
 const number = (value: number | null | undefined): string => finite(value) ? String(Number(value.toFixed(2))) : "לא זמין";
 const signed = (value: number): string => `${value >= 0 ? "+" : ""}${number(value)}`;
 const reportDay = (date: Date): string => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(date);
+
+/** When a price was quoted: ISO timestamp, or "YYYY-MM-DD[ HH:MM]" in Israel time. */
+export interface QuoteStamp {
+  at: string;
+  source: string;
+}
+
+/** Short Hebrew label for a quote time; `today` only when a same-day trade time is known. */
+export function describeQuoteStamp(stamp: QuoteStamp | undefined, generatedAt: Date): { label: string; when: string; source: string; today: boolean } | null {
+  if (!stamp) return null;
+  let day: string;
+  let time: string | null;
+  if (stamp.at.includes("T")) {
+    const date = new Date(stamp.at);
+    if (!Number.isFinite(date.getTime())) return null;
+    day = reportDay(date);
+    time = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Jerusalem", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(date);
+  } else {
+    const match = /^(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?$/.exec(stamp.at);
+    if (!match) return null;
+    day = match[1];
+    time = match[2] ?? null;
+  }
+  const today = day === reportDay(generatedAt) && time != null;
+  const [, month, dayOfMonth] = day.split("-");
+  const date = day === reportDay(generatedAt) ? "היום" : `${Number(dayOfMonth)}.${Number(month)}`;
+  const when = `${date}${time ? ` ${time}` : ""}`;
+  const source = plain(stamp.source);
+  return { label: `${when} · ${source}`, when, source, today };
+}
 
 function healthLines(input: ReportHtmlInput): string[] {
   const health = input.dataHealth;
@@ -120,9 +151,11 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
     const price = result?.price ?? (holding.symbol ? input.extraPrices?.get(holding.symbol) : undefined) ?? input.extraPrices?.get(holding.name);
     const previous = holding.symbol ? input.prevScores?.get(holding.symbol) : undefined;
     const reference = !result && holding.triggerIndex ? input.indices.find((entry) => entry.symbol === holding.triggerIndex) : undefined;
+    const quoted = positive(price) ? describeQuoteStamp(input.quoteStamps?.get(holding.name), input.generatedAt) : null;
     return {
       name: plain(holding.name), symbol: holding.symbol, taseNumber: holding.taseNumber, entryPrice: holding.entryPrice,
       ...(positive(price) ? { price, ...(positive(holding.entryPrice) ? { returnPct: (price / holding.entryPrice - 1) * 100 } : {}) } : {}),
+      ...(quoted ? { quotedAt: quoted.label } : {}),
       ...(result && finite(result.score) ? { score: result.score, ...(finite(previous) ? { scoreDelta: result.score - previous } : {}) } : {}),
       ...(positive(result?.sequenceStop) ? { sequenceStop: result.sequenceStop } : {}),
       ...(positive(result?.risk?.stop) ? { stop: result.risk.stop } : {}),
@@ -139,7 +172,7 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
   for (const [index, holding] of portfolio.entries()) {
     const definition = PORTFOLIO[index];
     const parts = [`${holding.name} (${[holding.symbol, holding.taseNumber].filter(Boolean).join(" / ")})`,
-      `כניסה ${number(holding.entryPrice)}`, `מחיר ${number(holding.price)}`,
+      `כניסה ${number(holding.entryPrice)}`, `מחיר ${number(holding.price)}${holding.quotedAt ? ` (${holding.quotedAt})` : ""}`,
       `יחידות: ${holding.symbol && !holding.symbol.endsWith(".TA") ? "דולר" : "אגורות"}`,
       `רווח/הפסד ${finite(holding.returnPct) ? `${signed(Number(holding.returnPct.toFixed(1)))}%` : "לא זמין"}`];
     if (finite(holding.score)) parts.push(`ציון ${number(holding.score)}${finite(holding.scoreDelta) ? ` | Δ ${signed(holding.scoreDelta)}` : " | Δ לא זמין"}`);
@@ -148,7 +181,7 @@ export function buildReportSummarySnapshot(input: ReportHtmlInput): ReportSummar
       const horizon = holding.symbol ? input.horizons?.get(holding.symbol) : undefined;
       if (horizon) parts.push(`שבועי ${number(horizon.weeklyScore)}`, `ארוך ${plain(horizon.longTerm?.label ?? "לא זמין")}`, `משולב ${number(horizon.combined)}`);
     } else {
-      parts.push(`${holding.coverage === "price-only" ? "מחיר בלבד" : "מחיר חסר"}; ללא ניתוח טכני, אין ציון או סטופ; זמן הציטוט לא ידוע`);
+      parts.push(`${holding.coverage === "price-only" ? "מחיר בלבד" : "מחיר חסר"}; ללא ניתוח טכני, אין ציון או סטופ${holding.quotedAt ? "" : "; זמן הציטוט לא ידוע"}`);
     }
     if (definition.triggerIndex) {
       const benchmark = input.indices.find((entry) => entry.symbol === definition.triggerIndex);

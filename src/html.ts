@@ -10,8 +10,8 @@ import type { MarketRegime } from "./regime.js";
 import type { CorrPair } from "./risk.js";
 import type { BetaEntry } from "./runner.js";
 import { selectDailyPick } from "./pick.js";
-import { PORTFOLIO, STOCK_SECTORS, HELD_SECTORS, PARAMS, RISK } from "./config.js";
-import { buildReportSummarySnapshot, type DataHealth, type ReportSummarySnapshot } from "./summary.js";
+import { PORTFOLIO, STOCK_SECTORS, HELD_SECTORS, PARAMS, RISK, type HoldingDef } from "./config.js";
+import { buildReportSummarySnapshot, describeQuoteStamp, type DataHealth, type QuoteStamp, type ReportSummarySnapshot } from "./summary.js";
 import { renderPortfolioBrief, BRIEF_CSS } from "./brief.js";
 
 function esc(s: string): string {
@@ -74,6 +74,8 @@ export interface ReportHtmlInput {
   betas?: BetaEntry[];
   priceChecks?: PriceCheckEntry[];
   sparkCloses?: Map<string, number[]>;
+  /** זמן הציטוט לכל החזקה, לפי שם ההחזקה. */
+  quoteStamps?: Map<string, QuoteStamp>;
   scorecard?: PickScorecard;
   signalDeltas?: Map<string, SignalDelta>;
   historicalForecasts?: Map<string, HistoricalForecast>;
@@ -150,9 +152,84 @@ function sparkline(closes: number[] | undefined, stop?: number | null): string {
   const up = closes[closes.length - 1] >= closes[0];
   const stopLine =
     stop != null
-      ? `<line x1="0" y1="${y(stop).toFixed(1)}" x2="${w}" y2="${y(stop).toFixed(1)}" class="spark-stop" />`
+      ? `<line x1="0" y1="${y(stop).toFixed(1)}" x2="${w}" y2="${y(stop).toFixed(1)}" class="spark-stop" vector-effect="non-scaling-stroke" />`
       : "";
-  return `<svg class="spark ${up ? "up" : "down"}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="מגמת מחיר">${stopLine}<polyline points="${points}" /></svg>`;
+  return `<svg class="spark ${up ? "up" : "down"}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="none" role="img" aria-label="מגמת מחיר">${stopLine}<polyline points="${points}" vector-effect="non-scaling-stroke" /></svg>`;
+}
+
+/** תגית זמן ציטוט: ירוקה לציטוט תוך-יומי מהיום, אפורה למחיר קודם. */
+function quoteChip(stamp: QuoteStamp | undefined, generatedAt: Date): string {
+  const quote = describeQuoteStamp(stamp, generatedAt);
+  if (!quote) return `<span class="quote-chip unknown">זמן ציטוט לא ידוע</span>`;
+  return `<span class="quote-chip ${quote.today ? "live" : "stale"}" title="זמן העסקה האחרונה לפי המקור"><bdi>${esc(quote.when)}</bdi> · <bdi>${esc(quote.source)}</bdi></span>`;
+}
+
+/** לוח פעולות: פעולה אחת לכל החזקה, מרחק מהסטופ, זמן ציטוט וגרף 30 יום. */
+function renderActionBoard(input: ReportHtmlInput): string {
+  if (!PORTFOLIO.length) return "";
+  const bySymbol = new Map(input.results.map((r) => [r.symbol, r]));
+  const idxBySymbol = new Map(input.indices.map((i) => [i.symbol, i]));
+  const cards = PORTFOLIO.map((h) => {
+    const r = h.symbol ? bySymbol.get(h.symbol) : undefined;
+    const price = r?.price ?? (h.symbol ? input.extraPrices?.get(h.symbol) : undefined) ?? input.extraPrices?.get(h.name) ?? null;
+    const pl = price != null ? ((price - h.entryPrice) / h.entryPrice) * 100 : null;
+    let action: { label: string; cls: string };
+    let reason = "";
+    let stopHtml = "";
+    let rank: number;
+    if (r) {
+      const { severity, reasons } = holdingSeverity(h, r, input.horizons?.get(r.symbol), input.newsByStock);
+      action = holdingAction(severity);
+      rank = severity;
+      reason = reasons[0] ?? `ציון ${r.score} · ${r.recommendation}`;
+      const stop = r.sequenceStop ?? r.risk?.stop ?? null;
+      if (stop != null) {
+        const dist = ((r.price - stop) / r.price) * 100;
+        stopHtml = `<div class="act-stop ${dist < 1.5 ? "near" : ""}"><span>סטופ</span><bdi>${fmt(stop)}</bdi><span class="act-dist"><bdi>${Math.abs(dist).toFixed(1)}%</bdi> ${dist >= 0 ? "מתחת למחיר" : "מעל המחיר (נשבר)"}</span></div>`;
+      }
+    } else if (h.triggerIndex && idxBySymbol.get(h.triggerIndex)) {
+      const idx = idxBySymbol.get(h.triggerIndex)!;
+      action = idx.indicators.trendUp ? { label: "להחזיק", cls: "act-hold" } : { label: "טריגר אזהרה", cls: "act-tight" };
+      rank = idx.indicators.trendUp ? 0 : 3;
+      reason = `לפי מדד ${idx.name}: ${idx.stance}, ממוצע ${PARAMS.smaShort} ${idx.indicators.trendUp ? "מעל" : "מתחת ל"} ${PARAMS.smaLong}`;
+    } else {
+      action = { label: "מחיר בלבד", cls: "act-none" };
+      rank = -1;
+      reason = price != null ? "אין ניתוח טכני לנייר זה" : "מחיר לא התקבל בהרצה זו";
+    }
+    const spark = h.symbol ? sparkline(input.sparkCloses?.get(h.symbol)?.slice(-30), r?.sequenceStop ?? r?.risk?.stop ?? null) : "";
+    const html = `<article class="act-card ${action.cls}">
+      <header><h3>${esc(h.name)}</h3><span class="act-pill">${esc(action.label)}</span></header>
+      <div class="act-price"><strong><bdi>${price != null ? fmt(price) : "—"}</bdi></strong>${pl != null ? `<span class="pl ${pl >= 0 ? "up" : "down"}"><bdi>${pl >= 0 ? "+" : ""}${pl.toFixed(1)}%</bdi></span>` : ""}</div>
+      ${quoteChip(price != null ? input.quoteStamps?.get(h.name) : undefined, input.generatedAt)}
+      ${stopHtml}
+      ${spark}
+      <p class="act-reason">${esc(reason)}</p>
+    </article>`;
+    return { rank, html };
+  });
+  cards.sort((a, b) => b.rank - a.rank);
+  return `<div class="act-board" aria-label="פעולה לכל החזקה">${cards.map((c) => c.html).join("")}</div>
+    <p class="note">הפעולה נגזרת מאותו סולם חומרה של מקטע המכירה. מרחק הסטופ מחושב מול סטופ הרצף, ואם אין — מול סטופ הסיכון. אין זו הוראת מסחר.</p>`;
+}
+
+const MARKET_STRIP = ["TA35.TA", "TA90.TA", "^GSPC", "^NDX", "^VIX"];
+
+/** פס מדדים מרכזיים עם שינוי יומי וגרף 30 יום. */
+function renderMarketStrip(indices: IndexAnalysis[], sparkCloses?: Map<string, number[]>): string {
+  const chips = MARKET_STRIP.map((symbol) => indices.find((i) => i.symbol === symbol)).filter((i): i is IndexAnalysis => !!i)
+    .map((idx) => {
+      const chg = idx.changePct;
+      // VIX rising is risk-off, so its colour is inverted.
+      const good = chg == null ? null : idx.symbol === "^VIX" ? chg <= 0 : chg >= 0;
+      return `<div class="mkt-chip ${good == null ? "" : good ? "good" : "bad"}">
+        <span class="mkt-name">${esc(idx.name)}</span>
+        <strong><bdi>${fmt(idx.price)}</bdi></strong>
+        ${chg != null ? `<span class="mkt-chg"><bdi>${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%</bdi></span>` : ""}
+        ${sparkline(sparkCloses?.get(idx.symbol))}
+      </div>`;
+    });
+  return chips.length ? `<div class="mkt-strip" aria-label="מדדים מרכזיים">${chips.join("")}</div>` : "";
 }
 
 function ltBadge(lt: LongTermView | null): string {
@@ -182,7 +259,9 @@ function renderPortfolioSection(
   horizons?: Map<string, HorizonInfo>,
   sparkCloses?: Map<string, number[]>,
   signalDeltas?: Map<string, SignalDelta>,
-  priceChecks?: PriceCheckEntry[]
+  priceChecks?: PriceCheckEntry[],
+  quoteStamps?: Map<string, QuoteStamp>,
+  generatedAt: Date = new Date()
 ): string {
   if (!PORTFOLIO.length) return "";
   const bySymbol = new Map(results.map((r) => [r.symbol, r]));
@@ -242,7 +321,7 @@ function renderPortfolioSection(
     return `<tr>
       <td class="name">${esc(h.name)}${h.note ? ` <small>${esc(h.note)}</small>` : ""}</td>
       <td class="num">${h.entryPrice.toLocaleString("he-IL", { maximumFractionDigits: 2 })}</td>
-      <td class="num">${price != null ? price.toLocaleString("he-IL", { maximumFractionDigits: 2 }) : "—"}</td>
+      <td class="num">${price != null ? price.toLocaleString("he-IL", { maximumFractionDigits: 2 }) : "—"}${price != null ? `<div>${quoteChip(quoteStamps?.get(h.name), generatedAt)}</div>` : ""}</td>
       <td class="num">${plHtml}</td>
       <td class="spark-cell">${chart}</td>
       <td>${status}</td>
@@ -363,28 +442,15 @@ function renderCorrelationSection(
   </section>`;
 }
 
-/**
- * המלצות מכירה — התראות יציאה על ההחזקות בתיק (מנוקדות לפי חומרה) ואיתותי מכירה טריים
- * במניות שבמעקב. קרנות סל ממונפות אינן נכללות כאן — עבורן מוצג מעקב טריגרים בלבד.
- */
-export function holdingSellAlerts(
-  results: AnalysisResult[],
-  horizons?: Map<string, HorizonInfo>,
+/** Exit-severity score and reasons for one analyzed holding (shared by the action board and sell section). */
+function holdingSeverity(
+  h: HoldingDef,
+  r: AnalysisResult,
+  hz: HorizonInfo | undefined,
   news?: Map<string, StockNews>
-): { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null }[] {
-  const bySymbol = new Map(results.map((r) => [r.symbol, r]));
-
-  type Alert = { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null };
-  const held: Alert[] = [];
-
-  for (const h of PORTFOLIO) {
-    if (!h.symbol) continue;
-    const r = bySymbol.get(h.symbol);
-    if (!r) continue;
-    const hz = horizons?.get(r.symbol);
+): { severity: number; reasons: string[] } {
     const reasons: string[] = [];
     let severity = 0;
-
     if (r.signals.some((s) => s.includes("שבירת רצף עולה"))) {
       severity += 3;
       reasons.push("🔔 שבירת רצף עולה (שיטת הרצפים) — איתות יציאה מובהק.");
@@ -445,7 +511,36 @@ export function holdingSellAlerts(
       severity += 1;
       reasons.push(`רווח ${plPct.toFixed(1)}% עם מתיחות קיצונית (סטוכסטי ${r.indicators.stochK?.toFixed(0)}, RSI ${r.indicators.rsi?.toFixed(0)}) — לשקול מימוש חלקי.`);
     }
+  return { severity, reasons };
+}
 
+/** Action level for a held position, from the same severity scale as the sell section. */
+function holdingAction(severity: number): { label: string; cls: string } {
+  if (severity >= 5) return { label: "לצאת", cls: "act-exit" };
+  if (severity >= 4) return { label: "לצמצם", cls: "act-reduce" };
+  if (severity >= 3) return { label: "להדק סטופ", cls: "act-tight" };
+  return { label: "להחזיק", cls: "act-hold" };
+}
+
+/**
+ * המלצות מכירה — התראות יציאה על ההחזקות בתיק (מנוקדות לפי חומרה) ואיתותי מכירה טריים
+ * במניות שבמעקב. קרנות סל ממונפות אינן נכללות כאן — עבורן מוצג מעקב טריגרים בלבד.
+ */
+export function holdingSellAlerts(
+  results: AnalysisResult[],
+  horizons?: Map<string, HorizonInfo>,
+  news?: Map<string, StockNews>
+): { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null }[] {
+  const bySymbol = new Map(results.map((r) => [r.symbol, r]));
+
+  type Alert = { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null };
+  const held: Alert[] = [];
+
+  for (const h of PORTFOLIO) {
+    if (!h.symbol) continue;
+    const r = bySymbol.get(h.symbol);
+    if (!r) continue;
+    const { severity, reasons } = holdingSeverity(h, r, horizons?.get(r.symbol), news);
     if (severity > 0) held.push({ name: h.name, symbol: r.symbol, price: r.price, severity, reasons, stop: r.risk?.stop ?? r.sequenceStop });
   }
 
@@ -679,7 +774,7 @@ function renderForecastSection(forecast: ForecastResult): string {
 }
 
 /** מפיק את מקטע סקירת מדדי העולם (ארה"ב, ישראל, אירופה, אסיה). */
-function renderIndicesSection(indices: IndexAnalysis[], historicalForecasts?: Map<string, HistoricalForecast>): string {
+function renderIndicesSection(indices: IndexAnalysis[], historicalForecasts?: Map<string, HistoricalForecast>, sparkCloses?: Map<string, number[]>): string {
   if (!indices.length) return "";
 
   const groups = new Map<string, IndexAnalysis[]>();
@@ -723,6 +818,7 @@ function renderIndicesSection(indices: IndexAnalysis[], historicalForecasts?: Ma
               ${chg}
               <span class="idx-score">ציון ${idx.score}</span>
             </div>
+            ${sparkline(sparkCloses?.get(idx.symbol))}
             <div class="idx-rec">📌 ${esc(idx.recommendation)}</div>
             <div class="idx-metrics">
               <span>RSI ${idx.indicators.rsi?.toFixed(0) ?? "-"}</span>
@@ -774,6 +870,7 @@ export function renderReportHtml(input: ReportHtmlInput): string {
     scorecard,
     signalDeltas,
     historicalForecasts,
+    quoteStamps,
   } = input;
   const hasHz = !!horizons && horizons.size > 0;
   const title = mode === "daily"
@@ -784,7 +881,7 @@ export function renderReportHtml(input: ReportHtmlInput): string {
   const sortKey = (r: AnalysisResult) => hzOf(r.symbol)?.combined ?? r.score;
   const sorted = [...results].sort((a, b) => sortKey(b) - sortKey(a));
 
-  const indicesHtml = renderIndicesSection(indices, historicalForecasts);
+  const indicesHtml = renderIndicesSection(indices, historicalForecasts, sparkCloses);
   const forecastHtml = renderForecastSection(forecast);
   const regimeHtml = renderRegimeSection(regime);
   const portfolioHtml = renderPortfolioSection(
@@ -795,7 +892,9 @@ export function renderReportHtml(input: ReportHtmlInput): string {
     horizons,
     sparkCloses,
     signalDeltas,
-    priceChecks
+    priceChecks,
+    quoteStamps,
+    generatedAt
   );
   const pickHtml = renderDailyPickSection(results, horizons, regime, newsByStock);
   const sellHtml = renderSellSection(results, horizons, newsByStock);
@@ -943,6 +1042,11 @@ export function renderReportHtml(input: ReportHtmlInput): string {
   const flaggedHoldings = summary.portfolio.filter((holding) => holding.alerts.length);
   const dateLabel = generatedAt.toLocaleString("he-IL", { timeZone: "Asia/Jerusalem", dateStyle: "medium", timeStyle: "short" });
   const pick = horizons?.size ? selectDailyPick(results, horizons, regime).main : null;
+  const quoted = PORTFOLIO.map((h) => describeQuoteStamp(quoteStamps?.get(h.name), generatedAt)).filter((q) => q != null);
+  const liveCount = quoted.filter((q) => q.today).length;
+  const quoteNote = quoted.length
+    ? `${liveCount ? `${liveCount} מתוך ${PORTFOLIO.length} החזקות עם ציטוט תוך-יומי מהיום` : "כל מחירי התיק מסשקות קודמים (לפני פתיחת המסחר או יום ללא מסחר)"}. זמן הציטוט מוצג ליד כל מחיר; מחירי תוך-יום עשויים להיות בעיכוב עד 20 דקות.`
+    : "זמן ההפקה אינו זמן הציטוט; המחירים אינם נתוני זמן אמת.";
 
   return `<!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -963,7 +1067,7 @@ ${FONT_LINK}
     <h1>${esc(title)}</h1>
     <div class="report-stamps"><p class="generated">הופק <time datetime="${esc(generatedAt.toISOString())}">${esc(dateLabel)}</time> · שעון ישראל</p>
     <p id="data-freshness">נרות יומיים אחרונים: ${esc(freshness)}</p></div>
-    <p class="freshness-note">זמן ההפקה אינו זמן הציטוט; המחירים אינם נתוני זמן אמת.</p>
+    <p class="freshness-note ${liveCount ? "live" : ""}">${esc(quoteNote)}</p>
   </header>
 
   ${renderPortfolioBrief(input, summary)}
@@ -974,6 +1078,9 @@ ${FONT_LINK}
 
   <section id="summary" class="executive" aria-labelledby="summary-title">
     <div class="section-heading"><h2 id="summary-title">תמונת מצב</h2><a class="health-status ${partial || !results.length ? "warn" : ""}" href="#data-health">${!results.length ? "אין תוצאות ניתוח" : partial ? "איסוף חלקי" : health ? "נתוני איסוף" : "כיסוי לא מתועד"}</a></div>
+    ${renderMarketStrip(indices, sparkCloses)}
+    <h3 class="board-title">מה עושים עם כל החזקה</h3>
+    ${renderActionBoard(input)}
     <div id="report-summary-text">
       <p><strong>${esc(coverage)}.</strong> כיסוי טכני ל־${analyzedHoldings} מתוך ${summary.portfolio.length} החזקות בתיק.</p>
       <p class="${flaggedHoldings.length ? "summary-alert" : "note"}">${flaggedHoldings.length
@@ -1496,8 +1603,27 @@ summary::marker{color:var(--muted)}details{min-width:0}details[open]>summary{mar
 .sort-button span{display:inline-block;width:12px;color:var(--muted)}
 th[aria-sort="ascending"] .sort-button span,th[aria-sort="descending"] .sort-button span{color:var(--accent)}
 .fc-head{flex-wrap:wrap}.report-foot{color:var(--muted);font-size:12px;text-align:center;padding:16px 0}
+.freshness-note.live{color:var(--buy);font-weight:600}
+.quote-chip{display:inline-block;align-self:flex-start;margin-top:4px;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap;direction:rtl}
+.quote-chip.live{background:var(--positive);color:var(--buy)}.quote-chip.stale{background:var(--caution);color:var(--hold)}.quote-chip.unknown{background:var(--soft);color:var(--muted)}
+.mkt-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:4px 0 18px}
+.mkt-chip{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--line);border-top:3px solid var(--line);border-radius:6px;min-width:0}
+.mkt-chip.good{border-top-color:var(--buy)}.mkt-chip.bad{border-top-color:var(--sell)}
+.mkt-name{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mkt-chip strong{font-size:17px;font-variant-numeric:tabular-nums}
+.mkt-chg{font-size:13px;font-weight:700}.mkt-chip.good .mkt-chg{color:var(--buy)}.mkt-chip.bad .mkt-chg{color:var(--sell)}.mkt-chip .spark{width:100%;height:28px}
+.board-title{font-size:15px;margin:6px 0 10px}
+.act-board{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:12px}
+.act-card{--act:var(--muted);display:flex;flex-direction:column;gap:6px;padding:12px 14px;border:1px solid var(--line);border-inline-start:5px solid var(--act);border-radius:6px;min-width:0;background:var(--card)}
+.act-card header{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.act-card h3{margin:0;font-size:15px;line-height:1.4}
+.act-pill{flex:none;padding:2px 10px;border-radius:12px;background:var(--act);color:#fff;font-size:12px;font-weight:700}
+.act-exit{--act:var(--sell);background:linear-gradient(0deg,var(--card),var(--negative))}.act-reduce{--act:#c2410c}.act-tight{--act:var(--hold)}.act-hold{--act:var(--buy)}.act-none{--act:#8a94a3}
+.act-price{display:flex;align-items:baseline;gap:10px}.act-price strong{font-size:20px;font-variant-numeric:tabular-nums}.act-price .pl{font-size:14px}
+.act-stop{display:flex;flex-wrap:wrap;gap:4px 8px;font-size:12px;color:var(--muted)}.act-stop bdi{color:var(--ink);font-weight:600}
+.act-stop.near .act-dist{color:var(--sell);font-weight:700}.act-card .spark{width:100%;height:30px}
+.act-reason{margin:0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.idx-card .spark{width:100%;height:30px;margin-bottom:8px}
 @media(max-width:900px){.report{padding:16px 24px}.report-header{grid-template-columns:1fr}.report-stamps{text-align:start}#report-summary-text{grid-template-columns:1fr;gap:10px}}
-@media(max-width:640px){.report{padding:12px}.report-header h1{font-size:21px}.report>section{margin-block:18px;padding-bottom:18px}.section-nav{gap:0 18px}.section-nav a{min-height:42px}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px}.stat strong{font-size:24px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.ranking-toolbar label{width:100%}.ranking-toolbar input{flex:1 1 160px}.card,.idx-card,.fc-card{padding:12px}h2{font-size:18px}.health-list{columns:1}.pick-main{padding-inline-start:12px}}
+@media(max-width:640px){.report{padding:12px}.report-header h1{font-size:21px}.report>section{margin-block:18px;padding-bottom:18px}.section-nav{gap:0 18px}.section-nav a{min-height:42px}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px}.stat strong{font-size:24px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.ranking-toolbar label{width:100%}.ranking-toolbar input{flex:1 1 160px}.card,.idx-card,.fc-card{padding:12px}h2{font-size:18px}.health-list{columns:1}.pick-main{padding-inline-start:12px}.mkt-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.act-board{grid-template-columns:1fr}.act-card .spark{height:26px}}
 @media print{
 @page{size:A4 landscape;margin:12mm}
 body{background:#fff;font-size:10pt}.report{max-width:none;padding:0}

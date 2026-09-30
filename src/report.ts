@@ -16,7 +16,7 @@ import { renderReportHtml, buildIndexHtml, type IndexReportEntry } from "./html.
 import { generateForecast, type HistoricalForecast } from "./forecast.js";
 import { selectDailyPick } from "./pick.js";
 import { PORTFOLIO } from "./config.js";
-import { buildReportSummarySnapshot, type DataHealth } from "./summary.js";
+import { buildReportSummarySnapshot, type DataHealth, type QuoteStamp } from "./summary.js";
 import { DocumentStore, migrateLegacyStorage, pruneReportHtml, readHistory, type HistoryKey, type MigrationResult } from "./storage.js";
 
 export type Mode = "daily" | "weekly";
@@ -82,6 +82,7 @@ export interface ReportInput {
   priceChecks?: PriceCheckEntry[];
   /** מחירי סגירה אחרונים להחזקות — לגרפי מיני בדוח. */
   sparkCloses?: Map<string, number[]>;
+  quoteStamps?: Map<string, QuoteStamp>;
   historicalForecasts?: Map<string, HistoricalForecast>;
   dataHealth?: DataHealth;
 }
@@ -102,6 +103,7 @@ export async function generateReport(input: ReportInput): Promise<string> {
     betas,
     priceChecks,
     sparkCloses,
+    quoteStamps,
     historicalForecasts,
     dataHealth,
   } = input;
@@ -157,6 +159,7 @@ export async function generateReport(input: ReportInput): Promise<string> {
     betas,
     priceChecks,
     sparkCloses,
+    quoteStamps,
     scorecard,
     signalDeltas,
     historicalForecasts,

@@ -480,34 +480,18 @@
   ],
   "portfolio": [
     {
-      "symbol": "DSCT.TA",
-      "name": "בנק דיסקונט",
-      "entryPrice": 3314.74,
-      "taseNumber": "639121",
-      "sector": "בנקים"
-    },
-    {
-      "symbol": "POLI.TA",
-      "name": "בנק הפועלים",
-      "entryPrice": 7593.39,
-      "taseNumber": "662577",
-      "sector": "בנקים"
-    },
-    {
-      "symbol": "MMHD.TA",
-      "name": "מנורה מבטחים",
-      "entryPrice": 47127.1,
-      "alertBelow": 44000,
-      "taseNumber": "566018",
+      "symbol": "HARL.TA",
+      "name": "הראל השקעות",
+      "entryPrice": 19844,
+      "taseNumber": "585018",
       "sector": "ביטוח"
     },
     {
-      "symbol": "DISI.TA",
-      "name": "דיסקונט השקעות (דסק\"ש)",
-      "entryPrice": 797,
-      "alertBelow": 790,
-      "taseNumber": "639013",
-      "sector": "נדל\"ן"
+      "symbol": "ELAL.TA",
+      "name": "אל על",
+      "entryPrice": 1708,
+      "taseNumber": "1087824",
+      "sector": "תעופה"
     },
     {
       "symbol": "SPCX",
@@ -551,19 +535,13 @@
       "sector": "בנקים"
     },
     {
-      "name": "GSPE",
+      "name": "קסם S&P Energy ETF",
       "entryPrice": 4502,
       "note": "נייר 1145903",
       "triggerIndex": "^GSPE",
       "taseNumber": "1145903",
       "investingUrl": "https://www.investing.com/etfs/ksm-4d-sp-energy",
       "sector": "אנרגיה"
-    },
-    {
-      "name": "בזן",
-      "entryPrice": 240.9,
-      "sector": "אנרגיה",
-      "symbol": "ORL.TA"
     }
   ],
   "stockSectors": {
@@ -574,6 +552,7 @@
     "FIBI.TA": "בנקים",
     "PHOE.TA": "ביטוח",
     "HARL.TA": "ביטוח",
+    "ELAL.TA": "תעופה",
     "MGDL.TA": "ביטוח",
     "CLIS.TA": "ביטוח",
     "MMHD.TA": "ביטוח",
@@ -602,7 +581,6 @@
     "MVNE.TA": "נדל\"ן",
     "MISH.TA": "נדל\"ן",
     "AURA.TA": "נדל\"ן",
-    "AFHL.TA": "נדל\"ן",
-    "ORL.TA": "אנרגיה"
+    "AFHL.TA": "נדל\"ן"
   }
 }

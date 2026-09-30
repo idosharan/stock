@@ -283,6 +283,31 @@ test("executive summary stays concise while health dates and the full snapshot r
   assert.doesNotMatch(html, /אין נתונים <script>/);
 });
 
+test("action board shows one action per holding with honest quote-time chips", async () => {
+  const { describeQuoteStamp } = await import("../src/summary.js");
+  const generatedAt = new Date("2026-09-29T10:00:00Z");
+  const label = (at: string, source: string) => {
+    const quote = describeQuoteStamp({ at, source }, generatedAt);
+    return quote && { label: quote.label, today: quote.today };
+  };
+  assert.deepEqual(label("2026-09-29T09:45:00Z", "Yahoo"), { label: "היום 12:45 · Yahoo", today: true });
+  assert.deepEqual(label("2026-09-28T14:25:00Z", "Yahoo"), { label: "28.9 17:25 · Yahoo", today: false });
+  // A same-day date without a trade time can be a pre-open page, so it is never marked intraday.
+  assert.deepEqual(label("2026-09-29", "Bizportal"), { label: "היום · Bizportal", today: false });
+  assert.equal(label("garbage", "x"), null);
+
+  const html = renderReportHtml({ ...reportInput(), generatedAt,
+    extraPrices: new Map([["קסם S&P Energy ETF", 4600]]),
+    quoteStamps: new Map([["קסם S&P Energy ETF", { at: "2026-09-29 12:40", source: "<b>Biz</b>" }]]) });
+  const board = /<div class="act-board"[^>]*>([\s\S]*?)<\/div>\s*<p class="note">/.exec(html);
+  assert.ok(board, "Action board renders inside the summary");
+  assert.equal([...board[1].matchAll(/class="act-card /g)].length, 2);
+  assert.match(board[1], /act-none[\s\S]*קסם S&amp;P Energy ETF[\s\S]*\+2\.2%[\s\S]*quote-chip live[^>]*><bdi>היום 12:40<\/bdi> · <bdi>Biz<\/bdi>/);
+  assert.match(board[1], /בנק דיסקונט[\s\S]*זמן ציטוט לא ידוע|בנק דיסקונט[\s\S]*מחיר לא התקבל/);
+  assert.doesNotMatch(html, /<b>Biz<\/b>/);
+  assert.match(html, /1 מתוך 2 החזקות עם ציטוט תוך-יומי מהיום/);
+});
+
 function indexFixture(repository: string | undefined, address: string, entries: Parameters<typeof buildIndexHtml>[0] = []) {
   const previous = process.env.GITHUB_REPOSITORY;
   let html: string;

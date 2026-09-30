@@ -3,7 +3,7 @@
  * מבצעת: משיכת חדשות, ניתוח כל מניה, והפקת דוח.
  */
 import { WATCHLIST, PARAMS, PORTFOLIO, BENCHMARKS, WORLD_INDICES } from "./config.js";
-import { fetchCandles, resampleWeekly, fetchInvestingPrice, fetchTasePrice, ensureTls } from "./data.js";
+import { fetchCandles, resampleWeekly, fetchInvestingPrice, fetchTasePrice, fetchBizportalQuote, getQuoteTime, ensureTls } from "./data.js";
 import { fetchAllNews, matchNewsForStock, type StockNews } from "./news.js";
 import {
   analyzeStock,
@@ -20,7 +20,7 @@ import { generateReport, type Mode } from "./report.js";
 import { historicalForecast, validateEvents, type HistoricalForecast, type HistoricalEvent } from "./forecast.js";
 import { DocumentStore } from "./storage.js";
 import { join } from "node:path";
-import type { DataHealth } from "./summary.js";
+import type { DataHealth, QuoteStamp } from "./summary.js";
 import { CollectionBudget } from "./collection-budget.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -248,6 +248,7 @@ export async function runAnalysis(
 
   const indices = await analyzeWorldIndices(mode, onProgress, collection);
   const analyzedIndices = new Set(indices.map((index) => index.symbol));
+  const sparkCloses = new Map<string, number[]>();
   for (const index of WORLD_INDICES) {
     if (!analyzedIndices.has(index.symbol)) {
       dataHealth.latestBarDates[index.symbol] ??= null;
@@ -258,6 +259,7 @@ export async function runAnalysis(
     try {
       const candles = await collection.run(`${index.symbol}:history`, () => fetchCandles(index.symbol, historyDays), []);
       recordDailyBarDate(dataHealth, index.symbol, candles);
+      sparkCloses.set(index.symbol, candles.slice(-30).map((c) => c.close));
       historicalForecasts.set(index.symbol, historicalForecast({ symbol: index.symbol, candles, asOf: generatedAt, events }));
     } catch (error) {
       dataHealth.latestBarDates[index.symbol] ??= null;
@@ -266,53 +268,76 @@ export async function runAnalysis(
     }
   }
 
-  // מחירים עדכניים לקרנות סל שאינן ב-Yahoo — מעמודי המכשיר ב-investing.com
-  const invHoldings = PORTFOLIO.filter((h) => !h.symbol && h.investingUrl);
-  if (invHoldings.length) {
-    log(`💹 מושך מחירי קרנות סל מ-investing.com (${invHoldings.length} ניירות)...`);
-    for (const h of invHoldings) {
+  // Quote-only ETFs are not on Yahoo: Bizportal by security number first, then investing.com, then the TASE site.
+  const quoteStamps = new Map<string, QuoteStamp>();
+  const quoteHoldings = PORTFOLIO.filter((h) => !h.symbol && (h.taseNumber || h.investingUrl));
+  if (quoteHoldings.length) {
+    log(`💹 מושך מחירי קרנות סל (${quoteHoldings.length} ניירות)...`);
+    for (const h of quoteHoldings) {
       const identifier = h.taseNumber ?? h.name;
-      dataHealth.warnings.push(`${identifier}: מחיר בלבד, ללא ניתוח טכני; זמן הציטוט אינו מסופק.`);
+      dataHealth.warnings.push(`${identifier}: מחיר בלבד, ללא ניתוח טכני.`);
+      const valid = (value: number | null): value is number => value != null && Number.isFinite(value) && value > 0;
       let price: number | null = null;
+      let source = "";
       let failure: string | undefined;
-      try {
-        price = await collection.run(identifier, () => fetchInvestingPrice(h.investingUrl!), null);
-      } catch (error) {
-        failure = (error as Error).message;
+      if (h.taseNumber) {
+        try {
+          const biz = await collection.run(`${identifier}:bizportal`, () => fetchBizportalQuote(h.taseNumber!), null);
+          if (biz && valid(biz.price)) {
+            price = biz.price;
+            source = biz.source;
+            if (biz.asOf) quoteStamps.set(h.name, { at: biz.asOf, source: biz.source });
+          }
+        } catch (error) {
+          failure = (error as Error).message;
+        }
       }
-      if (!(price != null && Number.isFinite(price) && price > 0) && h.taseNumber && !collection.expired) {
+      if (!valid(price) && h.investingUrl && !collection.expired) {
+        try {
+          price = await collection.run(identifier, () => fetchInvestingPrice(h.investingUrl!), null);
+          source = "investing.com";
+        } catch (error) {
+          failure = failure ? `${failure}; ${(error as Error).message}` : (error as Error).message;
+        }
+      }
+      if (!valid(price) && h.taseNumber && !collection.expired) {
         log(`   🔁 ${h.name}: מנסה מחיר לפי מספר נייר ${h.taseNumber} מאתר הבורסה...`);
         try {
           price = await collection.run(`${identifier}:tase`, () => fetchTasePrice(h.taseNumber!), null);
+          source = "אתר הבורסה";
         } catch (error) {
           failure = failure ? `${failure}; גם אתר הבורסה נכשל: ${(error as Error).message}` : (error as Error).message;
         }
       }
-      if (price != null && Number.isFinite(price) && price > 0) {
+      if (valid(price)) {
         extraPrices.set(h.name, price);
         delete dataHealth.failures[identifier];
+        delete dataHealth.failures[`${identifier}:bizportal`];
         delete dataHealth.failures[`${identifier}:tase`];
-        log(`   ✅ ${h.name}: ${price.toLocaleString("he-IL")}`);
+        log(`   ✅ ${h.name}: ${price.toLocaleString("he-IL")} (${source})`);
       } else {
-        dataHealth.failures[identifier] ??= failure ?? "לא התקבל מחיר מ-investing.com או מאתר הבורסה";
-        log(`   ⚠️  ${h.name}: לא התקבל מחיר (investing ומספר נייר).`);
+        dataHealth.failures[identifier] ??= failure ?? "לא התקבל מחיר מ-Bizportal, מ-investing.com או מאתר הבורסה";
+        log(`   ⚠️  ${h.name}: לא התקבל מחיר.`);
       }
       if (!collection.expired) await sleep(400);
     }
   }
 
-  // אימות צולב של מחירי ההחזקות מול מקור שני (investing.com אם הוגדר, אחרת אתר הבורסה)
+  // Cross-check holding prices against a second source (Bizportal by TASE number, else investing.com).
   const priceChecks: PriceCheck[] = [];
   const bySymbol = new Map(results.map((r) => [r.symbol, r]));
   for (const h of PORTFOLIO) {
-    if (!h.symbol || (!h.taseNumber && !h.investingUrl)) continue;
+    if (!h.symbol) continue;
+    const time = getQuoteTime(h.symbol);
+    if (time != null) quoteStamps.set(h.name, { at: new Date(time).toISOString(), source: "Yahoo" });
+    if (!h.taseNumber && !h.investingUrl) continue;
     const r = bySymbol.get(h.symbol);
     if (!r) continue;
     let second: number | null;
     try {
-      second = await collection.run(`${h.symbol}:verification`, () => h.investingUrl
-        ? fetchInvestingPrice(h.investingUrl)
-        : fetchTasePrice(h.taseNumber!), null);
+      second = await collection.run(`${h.symbol}:verification`, async () => h.taseNumber
+        ? (await fetchBizportalQuote(h.taseNumber))?.price ?? null
+        : await fetchInvestingPrice(h.investingUrl!), null);
     } catch (error) {
       dataHealth.warnings.push(`${h.symbol}: אימות מחיר ממקור שני נכשל: ${(error as Error).message}`);
       continue;
@@ -330,7 +355,6 @@ export async function runAnalysis(
     if (!collection.expired) await sleep(300);
   }
 
-  const sparkCloses = new Map<string, number[]>();
   for (const h of PORTFOLIO) {
     if (!h.symbol) continue;
     const closes = closesBySymbol.get(h.symbol);
@@ -351,6 +375,7 @@ export async function runAnalysis(
     betas,
     priceChecks,
     sparkCloses,
+    quoteStamps,
     historicalForecasts,
     dataHealth,
   });
