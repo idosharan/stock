@@ -538,13 +538,13 @@
       "name": "קסם S&P Energy ETF",
       "entryPrice": 4502,
       "note": "נייר 1145903",
-      "triggerIndex": "^GSPE",
       "taseNumber": "1145903",
       "investingUrl": "https://www.investing.com/etfs/ksm-4d-sp-energy",
       "sector": "אנרגיה"
     }
   ],
   "stockSectors": {
+    "ORL.TA": "אנרגיה",
     "POLI.TA": "בנקים",
     "LUMI.TA": "בנקים",
     "DSCT.TA": "בנקים",
