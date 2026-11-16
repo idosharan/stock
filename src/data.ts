@@ -10,6 +10,81 @@ import path from "node:path";
 import { ALLOW_INSECURE_TLS, CANDLE_CACHE } from "./config.js";
 import { DocumentStore, migrateLegacyStorage, readCachedCandles, type CandleCacheDocument } from "./storage.js";
 
+/* ----------------------- איכות נרות ומקביליות ----------------------- */
+
+const dayKey = (date: Date): string => date.toISOString().slice(0, 10);
+
+/** Rescales bars before a one-day ×100 or ÷100 jump (Yahoo .TA shekel/agorot switch) to the latest unit. */
+export function normalizeUnitSwitches(candles: Candle[]): Candle[] {
+  let out = candles;
+  for (let i = out.length - 1; i >= 1; i--) {
+    const prev = out[i - 1].close;
+    const cur = out[i].close;
+    if (!(prev > 0) || !(cur > 0)) continue;
+    const ratio = cur / prev;
+    const factor = ratio >= 60 && ratio <= 140 ? 100 : ratio >= 1 / 140 && ratio <= 1 / 60 ? 0.01 : null;
+    if (factor == null) continue;
+    const before = i >= 2 ? Math.abs(out[i - 1].close / out[i - 2].close - 1) : 0;
+    const after = i + 1 < out.length ? Math.abs(out[i + 1].close / out[i].close - 1) : 0;
+    if (before >= 0.25 || after >= 0.25) continue;
+    out = out.map((c, j) =>
+      j < i ? { ...c, open: c.open * factor, high: c.high * factor, low: c.low * factor, close: c.close * factor } : c
+    );
+  }
+  return out;
+}
+
+export interface BarDates {
+  last: string | null;
+  prev: string | null;
+}
+
+export function barDates(candles: Candle[]): BarDates {
+  const last = candles.at(-1)?.date;
+  const prev = candles.at(-2)?.date;
+  return { last: last ? dayKey(last) : null, prev: prev ? dayKey(prev) : null };
+}
+
+/** .TA symbols whose last bar, or previous bar, is older than the benchmark's (Yahoo dropped a session). */
+export function findStaleSymbols(bars: Map<string, BarDates>, benchmark: BarDates): string[] {
+  if (!benchmark.last) return [];
+  const stale: string[] = [];
+  for (const [symbol, b] of bars) {
+    if (!symbol.endsWith(".TA") || !b.last) continue;
+    const lagging = b.last < benchmark.last;
+    const gap = b.last === benchmark.last && b.prev != null && benchmark.prev != null && b.prev < benchmark.prev;
+    if (lagging || gap) stale.push(symbol);
+  }
+  return stale;
+}
+
+export interface PoolOptions {
+  concurrency: number;
+  /** When true, extra lanes stop taking work so the run continues sequentially. */
+  throttled?: () => boolean;
+}
+
+/** Runs `worker` over `items` with bounded concurrency; results keep input order. */
+export async function mapPool<T, R>(
+  items: readonly T[],
+  worker: (item: T, index: number) => Promise<R>,
+  options: PoolOptions
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const lanes = Math.min(Math.max(1, Math.floor(options.concurrency) || 1), items.length);
+  await Promise.all(
+    Array.from({ length: lanes }, async (_, lane) => {
+      while (next < items.length) {
+        if (lane > 0 && options.throttled?.()) return;
+        const index = next++;
+        results[index] = await worker(items[index], index);
+      }
+    })
+  );
+  return results;
+}
+
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/120.0 Safari/537.36";
@@ -101,6 +176,13 @@ export function getQuoteTime(symbol: string): number | null {
   return quoteTimes.get(symbol) ?? null;
 }
 
+let rateLimitHits = 0;
+
+/** Number of HTTP 429 responses from the chart API in this process. */
+export function getRateLimitHits(): number {
+  return rateLimitHits;
+}
+
 export interface ExternalQuote {
   price: number;
   /** YYYY-MM-DD (optionally followed by " HH:MM", Israel time) as stated by the source. */
@@ -147,12 +229,19 @@ export async function fetchBizportalQuote(securityNumber: string): Promise<Exter
 let cachedCookie: string | null = null;
 let cachedCrumb: string | null = null;
 
-/** מאתחל עוגייה ו-crumb (נשמרים בזיכרון לכל ההרצה), עם ניסיונות חוזרים ו-backoff. */
-async function ensureSession(): Promise<{ cookie: string; crumb: string }> {
-  if (cachedCrumb != null) {
-    return { cookie: cachedCookie ?? "", crumb: cachedCrumb };
-  }
+let sessionInFlight: Promise<{ cookie: string; crumb: string }> | null = null;
 
+/** Concurrent callers share one in-flight cookie/crumb request. */
+async function ensureSession(): Promise<{ cookie: string; crumb: string }> {
+  if (cachedCrumb != null) return { cookie: cachedCookie ?? "", crumb: cachedCrumb };
+  sessionInFlight ??= createSession().finally(() => {
+    sessionInFlight = null;
+  });
+  return sessionInFlight;
+}
+
+/** מאתחל עוגייה ו-crumb (נשמרים בזיכרון לכל ההרצה), עם ניסיונות חוזרים ו-backoff. */
+async function createSession(): Promise<{ cookie: string; crumb: string }> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
     if (attempt > 0) await sleep(1500 * Math.pow(2, attempt - 1)); // 1.5s..12s
@@ -229,6 +318,7 @@ async function fetchChartJson(symbol: string, days: number): Promise<any> {
         continue;
       }
       if (res.status === 429) {
+        rateLimitHits++;
         await sleep(1500 * Math.pow(2, attempt));
         continue;
       }
@@ -335,14 +425,14 @@ async function readCandleCache(symbol: string, days: number): Promise<Candle[] |
     finally { store.close(); }
     if (!raw) return null;
     if (raw.quoteTime != null && Number.isFinite(raw.quoteTime)) quoteTimes.set(symbol, raw.quoteTime);
-    return raw.candles.map(([d, o, h, l, c, v]) => ({
+    return normalizeUnitSwitches(raw.candles.map(([d, o, h, l, c, v]) => ({
       date: new Date(d),
       open: o,
       high: h,
       low: l,
       close: c,
       volume: v,
-    }));
+    })));
   } catch (error) {
     console.warn(`Candle cache read failed for ${symbol}: ${(error as Error).message}`);
     return null;
@@ -430,8 +520,9 @@ export async function fetchCandles(symbol: string, days: number): Promise<Candle
       });
     }
   }
-  await writeCandleCache(symbol, days, candles);
-  return candles;
+  const normalized = normalizeUnitSwitches(candles);
+  await writeCandleCache(symbol, days, normalized);
+  return normalized;
 }
 
 /**

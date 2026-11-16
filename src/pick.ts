@@ -1,6 +1,7 @@
 /**
  * בחירת ההמלצה היומית — מסננת איכות (נזילות, ציון משולב, יחס סיכוי/סיכון),
- * מסנן מצב שוק ומסנן דוחות כספיים. משותפת לדוח ה-HTML ולמעקב ביצועי ההמלצות.
+ * מסנן מצב שוק, מסנן דוחות כספיים וכללי מיכה סטוקס (דוח בתוך 7 ימים, חוק 3 הימים,
+ * ממוצע 150, לא רודפים). משותפת לדוח ה-HTML ולמעקב ביצועי ההמלצות.
  */
 import { PORTFOLIO, RISK } from "./config.js";
 import type { AnalysisResult, HorizonInfo } from "./analysis.js";
@@ -30,6 +31,8 @@ export interface PickSelection {
 
 const BASE_THRESHOLD = 30;
 const RISK_OFF_THRESHOLD = 45;
+/** Prefix of a rejection that comes from the followed creator's rules. */
+export const METHOD_REJECT_PREFIX = "כללי מיכה סטוקס: ";
 
 export function selectDailyPick(
   results: AnalysisResult[],
@@ -48,21 +51,48 @@ export function selectDailyPick(
 
   const riskOff = regime?.label === "ריסק-אוף";
   const threshold = riskOff ? RISK_OFF_THRESHOLD : BASE_THRESHOLD;
-  const regimeNote = riskOff
+  const baseNote = riskOff
     ? `מצב שוק ריסק-אוף (${regime?.score}) — סף הקנייה הועלה ל-${threshold} והעדיפות להמתנה.`
     : regime?.label === "ריסק-און"
     ? `מצב שוק ריסק-און (${regime?.score}) — רוח גבית לפריצות.`
     : null;
+  const macroNote = regime?.macroFlags?.length
+    ? `דגלי מאקרו: ${regime.macroFlags.map((f) => f.label).join(" · ")}.`
+    : null;
+  const regimeNote = [baseNote, macroNote].filter(Boolean).join(" ") || null;
 
   const held = new Set(PORTFOLIO.map((h) => h.symbol).filter((s): s is string => !!s));
   const rejected: RejectedCandidate[] = [];
+  const rankOf = (hz: HorizonInfo): number => hz.ranking ?? hz.combined;
 
   const cands = results
     .map((r) => ({ r, hz: horizons.get(r.symbol) }))
     .filter((x): x is PickCandidate => !!x.hz)
     .filter((x) => {
       if (!x.r.liquidityNote.includes("גבוהה")) return false;
-      if (x.r.score < 15 || x.hz.combined < threshold) return false;
+      if (x.hz.stale) {
+        rejected.push({ name: x.r.name, symbol: x.r.symbol, reason: "נר יומי חסר או מפגר אחרי המדד — נתון לא עדכני" });
+        return false;
+      }
+      if (x.hz.grades?.redFlags.length) {
+        rejected.push({ name: x.r.name, symbol: x.r.symbol, reason: `דגל אדום: ${x.hz.grades.redFlags.join("; ")}` });
+        return false;
+      }
+      const failing = (["momentum", "revisions"] as const).filter((k) => x.hz.grades?.letters[k] === "F");
+      if (failing.length) {
+        const names = failing.map((k) => (k === "momentum" ? "מומנטום F" : "רוויזיות F")).join(" ו-");
+        rejected.push({ name: x.r.name, symbol: x.r.symbol, reason: `${names} — כלל Seeking Alpha: אין קנייה עם מומנטום או תחזיות רווח חלשות` });
+        return false;
+      }
+      if (x.hz.engine === "hybrid") {
+        if (x.r.recommendation !== "קנייה" && x.r.recommendation !== "קנייה חזקה") return false;
+        if (x.hz.waitForConfirmation) {
+          rejected.push({ name: x.r.name, symbol: x.r.symbol, reason: "אות מכירה טכני טרי — להמתין לאישור" });
+          return false;
+        }
+      } else if (x.r.score < 15 || x.hz.combined < threshold) {
+        return false;
+      }
       if (!x.r.risk) {
         rejected.push({ name: x.r.name, symbol: x.r.symbol, reason: "לא ניתן לגזור סטופ הגיוני" });
         return false;
@@ -83,17 +113,26 @@ export function selectDailyPick(
         });
         return false;
       }
+      if (x.hz.method?.blocks.length) {
+        rejected.push({ name: x.r.name, symbol: x.r.symbol, reason: `${METHOD_REJECT_PREFIX}${x.hz.method.blocks.join("; ")}` });
+        return false;
+      }
       return true;
     })
-    .sort((a, b) => b.hz.combined - a.hz.combined);
+    .sort((a, b) => rankOf(b.hz) - rankOf(a.hz) || b.hz.combined - a.hz.combined);
 
   const fresh = cands.filter((x) => !held.has(x.r.symbol));
+  // With more rules more candidates fall out — show the highest-ranked ones, not the first in watchlist order
+  const rankOfSymbol = (symbol: string): number => {
+    const h = horizons.get(symbol);
+    return h ? rankOf(h) : -Infinity;
+  };
   return {
     main: fresh[0] ?? null,
     alts: fresh.slice(1, 3),
     strengthen: cands.find((x) => held.has(x.r.symbol)) ?? null,
     threshold,
     regimeNote,
-    rejected: rejected.slice(0, 5),
+    rejected: rejected.sort((a, b) => rankOfSymbol(b.symbol) - rankOfSymbol(a.symbol)).slice(0, 5),
   };
 }

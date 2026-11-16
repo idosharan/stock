@@ -10,10 +10,12 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { ALLOW_INSECURE_TLS, WATCHLIST, PARAMS, BENCHMARKS } from "./config.js";
+import { ALLOW_INSECURE_TLS, WATCHLIST, PARAMS, BENCHMARKS, GRADES_IN_RANKING } from "./config.js";
 import { analyzeStock, type Recommendation } from "./analysis.js";
 import type { Candle } from "./data.js";
 import { validateHistoricalForecast, type HistoricalValidation } from "./forecast.js";
+import { rawFactors, evaluateEngine, describeEngine, VARIANT_LABELS, type EngineValidation, type ValidationRow } from "./engine.js";
+import { evaluateGradeHistory, describeGradeValidation, type GradeHistory } from "./grades.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -25,12 +27,14 @@ export interface BacktestOptions {
   limit: number;
   horizons: number[];
   costBps: number;
+  /** Calendar days of history to download (default 730, 1825 for a 5-year validation). */
+  historyDays: number;
 }
 
 export function parseBacktestOptions(args: string[]): BacktestOptions {
-  const options: BacktestOptions = { days: 250, step: 2, limit: 20, horizons: [5, 10, 20], costBps: 20 };
+  const options: BacktestOptions = { days: 250, step: 2, limit: 20, horizons: [5, 10, 20], costBps: 20, historyDays: 730 };
   for (const argument of args) {
-    const match = /^--(days|step|limit|horizons|cost-bps)=(.+)$/.exec(argument);
+    const match = /^--(days|step|limit|horizons|cost-bps|history-days)=(.+)$/.exec(argument);
     if (!match) throw new Error(`Invalid option ${argument}; expected --name=value`);
     const [, name, raw] = match;
     const values = raw.split(",");
@@ -40,6 +44,7 @@ export function parseBacktestOptions(args: string[]): BacktestOptions {
     if (!valid || (name !== "horizons" && values.length !== 1)) throw new Error(`Invalid --${name}: ${raw}`);
     if (name === "horizons") options.horizons = [...new Set(numbers)];
     else if (name === "cost-bps") options.costBps = numbers[0];
+    else if (name === "history-days") options.historyDays = numbers[0];
     else options[name as "days" | "step" | "limit"] = numbers[0];
   }
   return options;
@@ -114,6 +119,7 @@ export interface SymbolValidation {
 export interface BacktestRun {
   observations: Observation[];
   historical: SymbolValidation[];
+  validation: ValidationRow[];
 }
 
 interface CollectionDependencies {
@@ -133,15 +139,16 @@ export function alignBenchmarkCloses(history: Candle[], benchmark: Candle[], per
 }
 
 export async function collectBacktest(options: BacktestOptions, dependencies: CollectionDependencies): Promise<BacktestRun> {
-  const { days, step, limit, horizons, costBps } = options;
+  const { days, step, limit, horizons, costBps, historyDays } = options;
   const log = dependencies.log ?? console.log;
   const pause = dependencies.pause ?? sleep;
   const maxHorizon = Math.max(...horizons);
-  const calendarDays = Math.max(730, Math.ceil((days + WARMUP + Math.max(maxHorizon, 20)) * 1.45) + 30);
+  const calendarDays = Math.max(historyDays, Math.ceil((days + WARMUP + Math.max(maxHorizon, 20)) * 1.45) + 30);
   const seen = new Set<string>();
   const universe = (dependencies.universe ?? WATCHLIST).filter(stock => !seen.has(stock.symbol) && !!seen.add(stock.symbol)).slice(0, limit);
   const observations: Observation[] = [];
   const historical: SymbolValidation[] = [];
+  const validation: ValidationRow[] = [];
   const requests = new Map<string, Promise<Candle[]>>();
   const fetchOnce = (symbol: string) => {
     if (!requests.has(symbol)) requests.set(symbol, dependencies.fetchCandles(symbol, calendarDays));
@@ -203,6 +210,17 @@ export async function collectBacktest(options: BacktestOptions, dependencies: Co
           signals: res.signals,
           fwd,
         });
+        const raw = rawFactors(history.map((candle) => candle.close));
+        if (raw) {
+          validation.push({
+            symbol: stock.symbol,
+            date: candles[index].date.toISOString().slice(0, 10),
+            technical: res.score,
+            raw,
+            freshSell: res.timing?.freshSell ?? false,
+            fwd,
+          });
+        }
         count++;
       }
       done++;
@@ -214,7 +232,7 @@ export async function collectBacktest(options: BacktestOptions, dependencies: Co
     }
     await pause(250);
   }
-  return { observations, historical };
+  return { observations, historical, validation };
 }
 
 /* ----------------------------- סטטיסטיקה ----------------------------- */
@@ -520,7 +538,25 @@ function historicalHtml(symbols: SymbolValidation[]): string {
   </section>`;
 }
 
-export function buildHtml(obs: Observation[], s: ReturnType<typeof summarize>, generatedAt: Date, options: BacktestOptions, historical: SymbolValidation[] = []): string {
+function engineHtml(engine: EngineValidation | null): string {
+  if (!engine) return `<section><h2>אימות מנוע הפקטורים</h2><p class="meta">אין מספיק תאריכים (לפחות 10 תאריכים עם 10 ניירות) לאימות.</p></section>`;
+  const cell = (v: number | null, digits: number) => fmt(v ?? NaN, digits);
+  const rows = (list: EngineValidation["evaluation"]) => list.map((s) => {
+    const h = s.horizons[String(engine.keyHorizon)];
+    return `<tr><td>${esc(VARIANT_LABELS[s.variant])}</td><td class="num">${cell(h.ic, 3)}</td><td class="num">${cell(h.icT, 2)}</td><td class="num">${fmtPct(h.spread ?? NaN)}</td><td class="num">${cell(h.hitRate, 0)}%</td><td class="num">${cell(s.turnover == null ? null : s.turnover * 100, 0)}%</td><td class="num">${h.dates}</td></tr>`;
+  }).join("");
+  const head = `<thead><tr><th>גרסה</th><th>IC${engine.keyHorizon}</th><th>t</th><th>פער חמישונים</th><th>הצלחה בחמישון העליון</th><th>תחלופה</th><th>תאריכים</th></tr></thead>`;
+  return `<section>
+    <h2>אימות מנוע הפקטורים (walk-forward)</h2>
+    <p class="meta">${esc(describeEngine(engine))}</p>
+    <h3>תקופת בחירה (עד ${esc(engine.splitDate)})</h3>
+    <table>${head}<tbody>${rows(engine.selection)}</tbody></table>
+    <h3>תקופת בדיקה (מ-${esc(engine.splitDate)})</h3>
+    <table>${head}<tbody>${rows(engine.evaluation)}</tbody></table>
+  </section>`;
+}
+
+export function buildHtml(obs: Observation[], s: ReturnType<typeof summarize>, generatedAt: Date, options: BacktestOptions, historical: SymbolValidation[] = [], engine: EngineValidation | null = null): string {
   const horizonSections = options.horizons.map((h) => {
     const rows = s.buckets
       .map((b) => {
@@ -633,6 +669,7 @@ tbody th{font-weight:500}tbody tr:nth-child(even){background:#f7faf9}
   </header>
   <section><h2>שיטת הבדיקה ומגבלותיה</h2><ul class="methodology">${methodology(options).map(note => `<li>${esc(note)}</li>`).join("")}</ul></section>
   ${historicalHtml(historical)}
+  ${engineHtml(engine)}
   ${horizonSections}
   ${calibrationSection}
 </main>
@@ -650,7 +687,7 @@ export async function main(args = process.argv.slice(2), dependencies?: Collecti
     dependencies = { fetchCandles };
   }
   const generatedAt = new Date();
-  const { observations: obs, historical } = await collectBacktest(options, dependencies);
+  const { observations: obs, historical, validation } = await collectBacktest(options, dependencies);
   console.log(methodology(options).join("\n"));
   console.log(formatHistoricalConsole(historical));
   if (!obs.length) {
@@ -660,11 +697,33 @@ export async function main(args = process.argv.slice(2), dependencies?: Collecti
   }
   const s = summarize(obs, options.horizons);
   printConsole(obs, s, options);
+  const engine = evaluateEngine(validation, options.horizons, generatedAt);
+  console.log(describeEngine(engine));
 
   const outDir = path.resolve("reports");
   await mkdir(outDir, { recursive: true });
+  const { DocumentStore } = await import("./storage.js");
+  const store = new DocumentStore(path.join(outDir, "state.sqlite"));
+  let gradeHistory: GradeHistory | undefined;
+  try {
+    if (engine) store.set("engine-validation", engine);
+    gradeHistory = store.get<GradeHistory>("grade-history");
+  } finally { store.close(); }
+  if (gradeHistory && Object.keys(gradeHistory).length) {
+    const first = Object.keys(gradeHistory).sort()[0];
+    const days = Math.max(60, Math.ceil((Date.now() - Date.parse(first)) / 86_400_000) + 45);
+    const candles = new Map<string, Candle[]>();
+    for (const symbol of new Set(Object.values(gradeHistory).flatMap((byDate) => Object.keys(byDate)))) {
+      try { candles.set(symbol, await dependencies.fetchCandles(symbol, days)); } catch { /* symbol skipped in the evaluation */ }
+    }
+    const gradeValidation = evaluateGradeHistory(gradeHistory, candles);
+    const gradeStore = new DocumentStore(path.join(outDir, "state.sqlite"));
+    try { gradeStore.set("grade-validation", gradeValidation); }
+    finally { gradeStore.close(); }
+    console.log(describeGradeValidation(gradeValidation, GRADES_IN_RANKING));
+  }
   const outPath = path.join(outDir, `backtest-${generatedAt.toISOString().slice(0, 10)}.html`);
-  await writeFile(outPath, buildHtml(obs, s, generatedAt, options, historical), "utf8");
+  await writeFile(outPath, buildHtml(obs, s, generatedAt, options, historical, engine), "utf8");
   console.log(`📄 דוח Backtest נשמר: ${outPath}`);
   const { maintainReportStorage } = await import("./report.js");
   await maintainReportStorage();

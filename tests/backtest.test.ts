@@ -31,9 +31,10 @@ test('forward returns preserve raw tails and reject unusable execution prices', 
 });
 
 test('numeric options accept zero costs but require positive integer sampling parameters', () => {
-  assert.deepEqual(parseBacktestOptions([]), { days: 250, step: 2, limit: 20, horizons: [5, 10, 20], costBps: 20 });
+  assert.deepEqual(parseBacktestOptions([]), { days: 250, step: 2, limit: 20, horizons: [5, 10, 20], costBps: 20, historyDays: 730 });
   assert.deepEqual(parseBacktestOptions(['--days=120', '--step=5', '--limit=3', '--horizons=1,5,5', '--cost-bps=0']),
-    { days: 120, step: 5, limit: 3, horizons: [1, 5], costBps: 0 });
+    { days: 120, step: 5, limit: 3, horizons: [1, 5], costBps: 0, historyDays: 730 });
+  assert.equal(parseBacktestOptions(['--history-days=1825']).historyDays, 1825);
   assert.equal(parseBacktestOptions(['--cost-bps=2.5']).costBps, 2.5);
   for (const argument of ['--days=0', '--step=-2', '--limit=1.5', '--days=NaN', '--step=Infinity', '--days=', '--days', '--days=2=3', '--days=9007199254740992', '--horizons=5,,10', '--horizons=0,5', '--horizons=2.5', '--cost-bps=-1', '--cost-bps=Infinity', '--cost-bps=', '--unknown=2']) {
     assert.throws(() => parseBacktestOptions([argument]), /--/, argument);
@@ -171,4 +172,25 @@ test('zero observations sets exit code 1 without writing a report or contacting 
     console.log = originalLog;
     console.error = originalError;
   }
+});
+
+test('collection emits factor validation rows and honours --history-days', async () => {
+  const history = Array.from({ length: 400 }, (_, index) => {
+    const close = 100 * 1.001 ** index;
+    return { date: new Date(Date.UTC(2020, 0, index + 1)), open: close * 0.999, high: close * 1.01,
+      low: close * 0.99, close, volume: 10000 };
+  });
+  const requests: number[] = [];
+  const result = await collectBacktest(parseBacktestOptions(['--days=40', '--horizons=5', '--step=10', '--history-days=1825']), {
+    universe: [{ symbol: 'ONE.TA', name: 'One' }],
+    fetchCandles: async (_symbol, days) => { requests.push(days); return history; },
+    log: () => {}, pause: async () => {},
+  });
+  assert.ok(requests.every((days) => days === 1825));
+  assert.ok(result.validation.length > 0);
+  const row = result.validation[0];
+  assert.equal(row.symbol, 'ONE.TA');
+  assert.equal(typeof row.technical, 'number');
+  assert.ok(row.raw.mom6_1 != null);
+  assert.equal(typeof row.freshSell, 'boolean');
 });

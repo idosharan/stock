@@ -35,8 +35,10 @@ import {
   type RelativeStrength,
 } from "./indicators.js";
 import { buildRiskPlan, positionSize, type PositionSize, type RiskPlan } from "./risk.js";
-import type { StockNews } from "./news.js";
-import type { Fundamentals } from "./fundamentals.js";
+import type { StockNews, MethodCheck } from "./news.js";
+import type { Fundamentals, CrowdData } from "./fundamentals.js";
+import type { FactorScore, PivotExtension, TopUpZone } from "./engine.js";
+import type { EvidenceGrades } from "./grades.js";
 
 export type Recommendation = "קנייה חזקה" | "קנייה" | "החזקה" | "הימנעות / מכירה";
 
@@ -73,6 +75,8 @@ export interface AnalysisResult {
   earningsInDays: number | null;
   newsSentiment: number;
   fundamentals: Fundamentals | null;
+  /** Fresh technical sell events today (sequence break, bearish cross, red candle above the upper band). */
+  timing?: { freshSell: boolean; reasons: string[] };
   indicators: {
     rsi: number | null;
     macdHist: number | null;
@@ -706,6 +710,13 @@ export function analyzeStock(
     );
   }
 
+  const timingReasons: string[] = [];
+  if (seq?.flippedToday && seq.direction === "down") timingReasons.push("שבירת רצף עולה");
+  if (bearCross) timingReasons.push(`קרוס דובי ${PARAMS.smaShort}/${PARAMS.smaLong}`);
+  if (bbUpperVal != null && lastCandle.close < lastCandle.open && lastCandle.close > bbUpperVal) {
+    timingReasons.push("נר אדום מעל רצועת בולינגר העליונה");
+  }
+
   return {
     symbol,
     name,
@@ -724,6 +735,7 @@ export function analyzeStock(
     earningsInDays,
     newsSentiment: news.totalSentiment,
     fundamentals: f,
+    timing: { freshSell: timingReasons.length > 0, reasons: timingReasons },
     indicators: {
       rsi: rsiVal,
       macdHist,
@@ -828,6 +840,26 @@ export interface HorizonInfo {
   /** שקלול: יומי 40% · שבועי 35% · ארוך 25% (מנורמל כשאופק חסר). */
   combined: number;
   alignment: "מלאה" | "חלקית" | "אין";
+  /** Sort key: factor score when the hybrid engine is adopted, otherwise `combined`. */
+  ranking?: number;
+  factor?: FactorScore | null;
+  /** Latest or previous bar lags the benchmark — not eligible for the daily pick. */
+  stale?: boolean;
+  /** Hybrid buy held back by a fresh technical sell event. */
+  waitForConfirmation?: boolean;
+  engine?: "hybrid";
+  /** ציוני ראיות A–F ודגלים אדומים (דגל אדום חוסם את המלצת הקנייה). */
+  grades?: EvidenceGrades;
+  /** Analyst consensus, targets, rating changes and insiders (display; graded as "consensus"). */
+  crowd?: CrowdData | null;
+  /** IBD-style RS Rating 1..99 across the analysed universe. */
+  rs?: number | null;
+  /** Fresh breakout more than 5% above its pivot — IBD: do not chase. */
+  extended?: PivotExtension | null;
+  /** Core holdings only: when a top-up makes sense. */
+  topUp?: TopUpZone | null;
+  /** Micha Stocks rules on the daily chart; `blocks` keeps a candidate out of the daily pick. */
+  method?: MethodCheck | null;
 }
 
 export function buildHorizonInfo(
@@ -850,6 +882,7 @@ export function buildHorizonInfo(
     weeklyRec: weekly?.recommendation ?? null,
     longTerm,
     combined,
+    ranking: combined,
     alignment,
   };
 }

@@ -27,15 +27,21 @@ export interface RiskInput {
   resistance: number | null;
 }
 
+const MAX_STOP_PCT = 8;
+/** Micha Stocks (6.11.2026): a stop inside the daily move gets hit; the default is 1.5–2 ATR. */
+export const MIN_STOP_ATR = 1.5;
+/** Below 1 ATR he measures a 61–87% chance of being stopped within two weeks — the 8% cap never goes closer. */
+const HARD_MIN_STOP_ATR = 1;
+
 /**
  * בוחר את הסטופ ההגיוני ביותר: הגבוה מבין המועמדים שעדיין רחוק מספיק מהמחיר
- * (לפחות 0.5×ATR) כדי לא להיסחף מרעש יומי, ומחשב יעד לפי התנגדות קרובה או 2R.
+ * (לפחות 1.5×ATR) כדי לא להיסחף מרעש יומי, ומחשב יעד לפי התנגדות קרובה או 2R.
  */
 export function buildRiskPlan(input: RiskInput): RiskPlan | null {
   const { price, atr, sequenceStop, chandelier, support, resistance } = input;
   if (!(price > 0)) return null;
   const atrVal = atr != null && atr > 0 ? atr : price * 0.02;
-  const minDistance = atrVal * 0.5;
+  const minDistance = atrVal * MIN_STOP_ATR;
 
   const candidates: Array<{ level: number; source: string }> = [];
   if (sequenceStop != null) candidates.push({ level: sequenceStop, source: "רצפים" });
@@ -46,7 +52,11 @@ export function buildRiskPlan(input: RiskInput): RiskPlan | null {
   const valid = candidates
     .filter((c) => c.level > 0 && c.level < price - minDistance)
     .sort((a, b) => b.level - a.level);
-  const chosen = valid[0] ?? { level: price - 2 * atrVal, source: "2×ATR" };
+  let chosen = valid[0] ?? { level: price - 2 * atrVal, source: "2×ATR" };
+  // IBD/CAN SLIM: never risk more than 8% below the entry
+  if (chosen.level < price * (1 - MAX_STOP_PCT / 100) && price * (1 - MAX_STOP_PCT / 100) < price - atrVal * HARD_MIN_STOP_ATR) {
+    chosen = { level: price * (1 - MAX_STOP_PCT / 100), source: "תקרת 8% (IBD)" };
+  }
   const stop = chosen.level;
   const riskAbs = price - stop;
   if (!(riskAbs > 0)) return null;

@@ -5,6 +5,7 @@
 import type { Candle } from "./data.js";
 import { sma } from "./indicators.js";
 import { PARAMS } from "./config.js";
+import type { MacroFlag } from "./engine.js";
 
 export type RegimeLabel = "ריסק-און" | "ניטרלי" | "ריסק-אוף";
 
@@ -23,6 +24,8 @@ export interface MarketRegime {
   score: number;
   label: RegimeLabel;
   notes: string[];
+  /** Macro flags attached by the runner (display/note only). */
+  macroFlags?: MacroFlag[];
 }
 
 export interface RegimeStockInput {

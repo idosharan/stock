@@ -7,7 +7,9 @@ export interface InstrumentStock { symbol: string; name: string }
 export interface InstrumentHolding {
   symbol?: string;
   name: string;
-  entryPrice: number;
+  /** Optional only for core holdings (kept permanently, no cost basis given). */
+  entryPrice?: number;
+  core?: boolean;
   note?: string;
   triggerIndex?: string;
   alertBelow?: number;
@@ -82,9 +84,10 @@ export function validateInstrumentConfig(input: unknown): InstrumentConfig {
   const names = new Set<string>();
   for (const item of config.portfolio) {
     const holding = object(item, "holding");
-    knownKeys(holding, ["symbol", "name", "entryPrice", "note", "triggerIndex", "alertBelow", "investingUrl", "taseNumber", "sector"]);
+    knownKeys(holding, ["symbol", "name", "entryPrice", "core", "note", "triggerIndex", "alertBelow", "investingUrl", "taseNumber", "sector"]);
     text(holding.name, "name");
-    positive(holding.entryPrice, "entryPrice");
+    if (holding.core !== undefined && typeof holding.core !== "boolean") throw new Error("core: expected true or false");
+    if (holding.entryPrice !== undefined || holding.core !== true) positive(holding.entryPrice, "entryPrice");
     if (names.has(holding.name)) throw new Error(`Duplicate holding name: ${holding.name}`);
     names.add(holding.name);
     if (holding.symbol !== undefined) symbol(holding.symbol);
@@ -126,7 +129,7 @@ export function updateInstrumentConfig(input: InstrumentConfig, change: Instrume
   if (!["portfolio", "watchlist"].includes(change.target)) throw new Error("Invalid target");
   if (change.record !== undefined) knownKeys(object(change.record, "record"), change.target === "watchlist"
     ? ["symbol", "name", "sector"]
-    : ["symbol", "name", "entryPrice", "note", "triggerIndex", "alertBelow", "investingUrl", "taseNumber", "sector"]);
+    : ["symbol", "name", "entryPrice", "core", "note", "triggerIndex", "alertBelow", "investingUrl", "taseNumber", "sector"]);
   const isTase = numberPattern.test(change.id);
   if (!isTase) symbol(change.id);
   if (isTase && change.target === "watchlist") throw new Error("Watchlist requires a Yahoo symbol");

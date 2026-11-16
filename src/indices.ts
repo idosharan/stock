@@ -3,7 +3,7 @@
  * המלצת מגמה לכל מדד. הניתוח מבוסס על אינדיקטורים טכניים (מגמה, RSI, MACD,
  * ADX, מומנטום) ללא שכבת חדשות/נזילות הרלוונטית למניה בודדת.
  */
-import { PARAMS, WORLD_INDICES, type IndexDef } from "./config.js";
+import { PARAMS, WORLD_INDICES, INDEX_HISTORY_PROXY, type IndexDef } from "./config.js";
 import { fetchCandles, resampleWeekly } from "./data.js";
 import type { Candle } from "./data.js";
 import { sma, rsi, macd, adx, roc, atr, bollinger, analyzeSequences } from "./indicators.js";
@@ -245,6 +245,25 @@ export function analyzeIndex(def: IndexDef, candles: Candle[]): IndexAnalysis | 
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Fewer bars than this and the index is read from its configured 1:1 tracker instead. */
+export const MIN_INDEX_BARS = 60;
+
+/**
+ * Daily history of an index; falls back to `INDEX_HISTORY_PROXY` when Yahoo has (almost) no history for it.
+ * `source` is the symbol whose candles were returned. The fetcher is injectable so callers keep their own data layer.
+ */
+export async function fetchIndexHistory(
+  symbol: string,
+  days: number,
+  fetcher: (symbol: string, days: number) => Promise<Candle[]> = fetchCandles
+): Promise<{ candles: Candle[]; source: string; note?: string }> {
+  const own = await fetcher(symbol, days);
+  const proxy = INDEX_HISTORY_PROXY[symbol];
+  if (own.length >= MIN_INDEX_BARS || !proxy) return { candles: own, source: symbol };
+  const tracked = await fetcher(proxy.symbol, days).catch(() => [] as Candle[]);
+  return tracked.length > own.length ? { candles: tracked, source: proxy.symbol, note: proxy.note } : { candles: own, source: symbol };
+}
+
 /** מושך ומנתח את כל מדדי העולם המוגדרים. */
 export async function analyzeWorldIndices(
   mode: Mode = "daily",
@@ -261,7 +280,7 @@ export async function analyzeWorldIndices(
   for (const def of WORLD_INDICES) {
     if (collection.expired) break;
     try {
-      const daily = await collection.run(def.symbol, () => fetchCandles(def.symbol, historyDays), []);
+      const daily = (await collection.run(def.symbol, () => fetchIndexHistory(def.symbol, historyDays), { candles: [] as Candle[], source: def.symbol })).candles;
       const candles = mode === "weekly" ? resampleWeekly(daily) : daily;
       const res = analyzeIndex(def, candles);
       if (res) {

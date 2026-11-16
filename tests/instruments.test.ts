@@ -15,6 +15,15 @@ function fixture(): InstrumentConfig {
     stockSectors: { "DSCT.TA": "Banks" } };
 }
 
+test("core holdings may omit the entry price and the update form can mark them core", () => {
+  const config = fixture();
+  config.watchlist.push({ symbol: "NVDA", name: "NVIDIA" });
+  config.portfolio.push({ symbol: "NVDA", name: "NVIDIA", core: true, note: "$" });
+  assert.deepEqual(validateInstrumentConfig(config), config);
+  const marked = updateInstrumentConfig(fixture(), { action: "update", target: "portfolio", id: "DSCT.TA", record: { core: true } });
+  assert.equal(marked.portfolio[0].core, true);
+});
+
 test("S&P 500 Energy is an analyzed world index and a supported reference index", () => {
   assert.ok(WORLD_INDICES.some(index => index.symbol === "^GSPE" && index.name.includes("Energy")));
   assert.ok(instruments.SUPPORTED_TRIGGER_INDICES.includes("^GSPE"));
@@ -29,6 +38,9 @@ test("configuration rejects malformed, duplicate and unsafe records", () => {
   assert.deepEqual(validateInstrumentConfig(valid), valid);
   for (const entryPrice of [-1, 0, Infinity, "4502"]) {
     assert.throws(() => validateInstrumentConfig({ ...valid, portfolio: [{ ...valid.portfolio[0], entryPrice }] }), /entryPrice/);
+  }
+  for (const core of ["yes", 1, null]) {
+    assert.throws(() => validateInstrumentConfig({ ...valid, portfolio: [{ ...valid.portfolio[0], core }] }), /core/);
   }
   assert.throws(() => validateInstrumentConfig({ ...valid, portfolio: [valid.portfolio[0], valid.portfolio[0]] }), /Duplicate/);
   assert.throws(() => validateInstrumentConfig({ ...valid, watchlist: [{ symbol: "$(curl evil)", name: "Bad" }] }), /symbol/);

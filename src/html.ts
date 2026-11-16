@@ -3,16 +3,21 @@
  */
 import type { AnalysisResult, HorizonInfo, LongTermView } from "./analysis.js";
 import type { IndexAnalysis, MarketStance } from "./indices.js";
-import type { StockNews, NewsItem } from "./news.js";
+import { METHOD_RULES, methodPassLine, type StockNews, type NewsItem, type CreatorView, type CreatorRow } from "./news.js";
 import type { Mode, PickScorecard, PriceCheckEntry, SignalDelta } from "./report.js";
 import type { ForecastResult, ForecastDirection, HistoricalForecast } from "./forecast.js";
 import type { MarketRegime } from "./regime.js";
 import type { CorrPair } from "./risk.js";
 import type { BetaEntry } from "./runner.js";
 import { selectDailyPick } from "./pick.js";
-import { PORTFOLIO, STOCK_SECTORS, HELD_SECTORS, PARAMS, RISK, type HoldingDef } from "./config.js";
-import { buildReportSummarySnapshot, describeQuoteStamp, type DataHealth, type QuoteStamp, type ReportSummarySnapshot } from "./summary.js";
+import { PORTFOLIO, STOCK_SECTORS, HELD_SECTORS, PARAMS, RISK, GRADES_IN_RANKING, type HoldingDef } from "./config.js";
+import { buildReportSummarySnapshot, coreHoldingLines, describeQuoteStamp, starText, type DataHealth, type QuoteStamp, type ReportSummarySnapshot } from "./summary.js";
 import { renderPortfolioBrief, BRIEF_CSS } from "./brief.js";
+import { describeEngine, underlyingText, type EngineValidation, type SensitivityRow, type LeverageTrigger, type MacroView, type UnderlyingStatus } from "./engine.js";
+import { describeGradeValidation, gradeChips, gradeWhy, starRating, GRADE_KEYS, type EvidenceGrades, type GradeValidation } from "./grades.js";
+import { SETUP_LABEL } from "./indicators.js";
+import { FUND_BUY_MIN_COMBINED, type FundAction, type FundIndexView } from "./engine.js";
+import { marketRecommendations } from "./brief.js";
 
 function esc(s: string): string {
   return String(s)
@@ -81,10 +86,36 @@ export interface ReportHtmlInput {
   historicalForecasts?: Map<string, HistoricalForecast>;
   dataHealth?: DataHealth;
   summary?: ReportSummarySnapshot;
+  /** SMA200 status of each leveraged/index holding's reference index. */
+  leverageTriggers?: Map<string, LeverageTrigger>;
+  macro?: MacroView;
+  exposure?: SensitivityRow[];
+  engine?: EngineValidation | null;
+  gradeValidation?: GradeValidation | null;
+  /** Followed creator videos, mentions and trend-change setups. */
+  creator?: CreatorView;
+  /** Funds analysed through their reference index (full engine on the index, levels translated to the fund). */
+  fundViews?: FundIndexView[];
+  /** US market regime (S&P 500 + US breadth); `regime` is the Tel Aviv one. */
+  usRegime?: MarketRegime | null;
 }
 
 const fmt = (n: number, digits = 2): string =>
   n.toLocaleString("he-IL", { maximumFractionDigits: digits });
+
+/** Return vs cost basis in percent; null when the holding has no entry price (core holdings may omit it). */
+const plPctOf = (price: number | null | undefined, entry: number | undefined): number | null =>
+  price != null && entry != null && entry > 0 ? ((price - entry) / entry) * 100 : null;
+
+/** כרטיס ציוני הראיות: אותיות A–F, שורת "למה" ודגלים אדומים. */
+function gradeHtml(g: EvidenceGrades | undefined): string {
+  if (!g) return "";
+  const why = gradeWhy({ ...g, redFlags: [] });
+  return `<div class="grades">${esc(gradeChips(g))}</div>${why ? `<div class="grades-why">${esc(why)}</div>` : ""}${
+    g.redFlags.map((f) => `<div class="grades-flag">🚩 ${esc(f)}</div>`).join("")}`;
+}
+
+const gradeLetters = (g: EvidenceGrades | undefined): string => (g ? GRADE_KEYS.map((k) => g.letters[k] ?? "—").join("") : "—");
 
 function renderHistoricalEvidence(evidence: HistoricalForecast | undefined): string {
   if (!evidence) return '<p class="note">אין נתוני תחזית היסטורית; לא מוצגת הסתברות.</p>';
@@ -169,17 +200,19 @@ function renderActionBoard(input: ReportHtmlInput): string {
   if (!PORTFOLIO.length) return "";
   const bySymbol = new Map(input.results.map((r) => [r.symbol, r]));
   const idxBySymbol = new Map(input.indices.map((i) => [i.symbol, i]));
+  const fundByName = new Map((input.fundViews ?? []).map((v) => [v.name, v]));
   const cards = PORTFOLIO.map((h) => {
     const r = h.symbol ? bySymbol.get(h.symbol) : undefined;
+    const fv = r ? undefined : fundByName.get(h.name);
     const price = r?.price ?? (h.symbol ? input.extraPrices?.get(h.symbol) : undefined) ?? input.extraPrices?.get(h.name) ?? null;
-    const pl = price != null ? ((price - h.entryPrice) / h.entryPrice) * 100 : null;
+    const pl = plPctOf(price, h.entryPrice);
     let action: { label: string; cls: string };
     let reason = "";
     let stopHtml = "";
     let rank: number;
     if (r) {
       const { severity, reasons } = holdingSeverity(h, r, input.horizons?.get(r.symbol), input.newsByStock);
-      action = holdingAction(severity);
+      action = holdingAction(severity, h.core === true);
       rank = severity;
       reason = reasons[0] ?? `ציון ${r.score} · ${r.recommendation}`;
       const stop = r.sequenceStop ?? r.risk?.stop ?? null;
@@ -187,17 +220,36 @@ function renderActionBoard(input: ReportHtmlInput): string {
         const dist = ((r.price - stop) / r.price) * 100;
         stopHtml = `<div class="act-stop ${dist < 1.5 ? "near" : ""}"><span>סטופ</span><bdi>${fmt(stop)}</bdi><span class="act-dist"><bdi>${Math.abs(dist).toFixed(1)}%</bdi> ${dist >= 0 ? "מתחת למחיר" : "מעל המחיר (נשבר)"}</span></div>`;
       }
+    } else if (fv) {
+      const reduce = fv.action === "צמצום / מכירה";
+      action = reduce ? { label: "לצמצם", cls: "act-reduce" } : fv.action === "קנייה / חיזוק" ? { label: "לחזק", cls: "act-hold" } : { label: "להחזיק", cls: "act-hold" };
+      rank = reduce ? 4 : 0;
+      reason = `לפי ${fv.indexName}: ${fv.reasons[0] ?? fv.analysis.recommendation}`;
+      if (fv.fund && !reduce) {
+        stopHtml = `<div class="act-stop"><span>סטופ ≈</span><bdi>${fmt(fv.fund.stop)}</bdi><span class="act-dist"><bdi>${fv.fund.riskPct.toFixed(1)}%</bdi> מתחת למחיר (לפי המדד)</span></div>`;
+      }
+    } else if (h.triggerIndex && input.leverageTriggers?.get(h.triggerIndex)) {
+      const st = leverageStatus(input.leverageTriggers.get(h.triggerIndex)!, idxBySymbol.get(h.triggerIndex)?.name ?? h.triggerIndex);
+      action = { label: st.label, cls: st.cls };
+      rank = st.rank;
+      reason = st.text;
     } else if (h.triggerIndex && idxBySymbol.get(h.triggerIndex)) {
       const idx = idxBySymbol.get(h.triggerIndex)!;
       action = idx.indicators.trendUp ? { label: "להחזיק", cls: "act-hold" } : { label: "טריגר אזהרה", cls: "act-tight" };
       rank = idx.indicators.trendUp ? 0 : 3;
       reason = `לפי מדד ${idx.name}: ${idx.stance}, ממוצע ${PARAMS.smaShort} ${idx.indicators.trendUp ? "מעל" : "מתחת ל"} ${PARAMS.smaLong}`;
+    } else if (input.macro?.underlying?.some((u) => u.taseNumber === h.taseNumber)) {
+      const u = input.macro.underlying.find((x) => x.taseNumber === h.taseNumber)!;
+      action = u.hit ? { label: "לצמצם", cls: "act-reduce" } : { label: "להחזיק", cls: "act-hold" };
+      rank = u.hit ? 4 : 0;
+      reason = underlyingText(u);
     } else {
       action = { label: "מחיר בלבד", cls: "act-none" };
       rank = -1;
       reason = price != null ? "אין ניתוח טכני לנייר זה" : "מחיר לא התקבל בהרצה זו";
     }
-    const spark = h.symbol ? sparkline(input.sparkCloses?.get(h.symbol)?.slice(-30), r?.sequenceStop ?? r?.risk?.stop ?? null) : "";
+    const spark = h.symbol ? sparkline(input.sparkCloses?.get(h.symbol)?.slice(-30), r?.sequenceStop ?? r?.risk?.stop ?? null)
+      : fv ? sparkline(input.sparkCloses?.get(fv.indexSymbol)?.slice(-30)) : "";
     const html = `<article class="act-card ${action.cls}">
       <header><h3>${esc(h.name)}</h3><span class="act-pill">${esc(action.label)}</span></header>
       <div class="act-price"><strong><bdi>${price != null ? fmt(price) : "—"}</bdi></strong>${pl != null ? `<span class="pl ${pl >= 0 ? "up" : "down"}"><bdi>${pl >= 0 ? "+" : ""}${pl.toFixed(1)}%</bdi></span>` : ""}</div>
@@ -261,29 +313,33 @@ function renderPortfolioSection(
   signalDeltas?: Map<string, SignalDelta>,
   priceChecks?: PriceCheckEntry[],
   quoteStamps?: Map<string, QuoteStamp>,
-  generatedAt: Date = new Date()
+  generatedAt: Date = new Date(),
+  leverageTriggers?: Map<string, LeverageTrigger>,
+  underlying?: UnderlyingStatus[],
+  fundViews?: FundIndexView[]
 ): string {
   if (!PORTFOLIO.length) return "";
   const bySymbol = new Map(results.map((r) => [r.symbol, r]));
   const idxBySymbol = new Map(indices.map((i) => [i.symbol, i]));
   const checkBySymbol = new Map((priceChecks ?? []).map((c) => [c.symbol, c]));
+  const fundByName = new Map((fundViews ?? []).map((v) => [v.name, v]));
 
   const rows = PORTFOLIO.map((h) => {
     const r = h.symbol ? bySymbol.get(h.symbol) : undefined;
     // ניירות ללא ניתוח מלא: מחיר לפי סימול (Yahoo) או לפי שם ההחזקה (investing.com)
     const price = r?.price ?? (h.symbol ? extraPrices?.get(h.symbol) : undefined) ?? extraPrices?.get(h.name) ?? null;
-    const plPct = price != null ? ((price - h.entryPrice) / h.entryPrice) * 100 : null;
+    const plPct = plPctOf(price, h.entryPrice);
     const plHtml =
       plPct != null
         ? `<span class="pl ${plPct >= 0 ? "up" : "down"}">${plPct >= 0 ? "▲" : "▼"} ${Math.abs(plPct).toFixed(1)}%</span>`
-        : `<span class="pl na">—</span>`;
+        : `<span class="pl na" title="${h.entryPrice == null ? "אין מחיר עלות" : "אין מחיר"}">—</span>`;
 
     let status: string;
     if (r) {
       status = `<span class="badge ${recClass(r.recommendation)}">${esc(r.recommendation)}</span> <span class="pf-score">ציון ${r.score} ${deltaHtml(r.symbol, r.score, prevScores)}</span>`;
       const hz = horizons?.get(r.symbol);
       if (hz) {
-        status += `<div class="pf-hz">שבועי ${hz.weeklyScore ?? "—"} · ארוך ${hz.longTerm?.label ?? "—"} · משולב <strong>${hz.combined}</strong>${hz.alignment === "מלאה" ? " 🚀" : ""}</div>`;
+        status += `<div class="pf-hz">שבועי ${hz.weeklyScore ?? "—"} · ארוך ${hz.longTerm?.label ?? "—"} · משולב <strong>${hz.combined}</strong>${hz.alignment === "מלאה" ? " 🚀" : ""}${hz.factor ? ` · פקטורים <strong>${hz.factor.score}</strong> (דירוג ${hz.factor.rank})` : ""}</div>${gradeHtml(hz.grades)}`;
       }
       if (r.risk) {
         status += `<div class="pf-risk">🎯 סטופ <strong>${fmt(r.risk.stop)}</strong> (${esc(r.risk.stopSource)}) · יעד ${fmt(r.risk.target)} · סיכוי/סיכון ${r.risk.rr.toFixed(1)}</div>`;
@@ -298,19 +354,34 @@ function renderPortfolioSection(
       if (check && Math.abs(check.deviationPct) > 2) {
         status += `<div class="pf-alert">⚠️ פער ${check.deviationPct.toFixed(1)}% מול אתר הבורסה (${fmt(check.tase)}) — לאמת לפני פעולה</div>`;
       }
+    } else if (fundByName.has(h.name)) {
+      const fv = fundByName.get(h.name)!;
+      status = `<span class="badge ${recClass(FUND_ACTION_REC[fv.action])}">${esc(fv.action)}</span> <span class="pf-score">לפי ${esc(fv.indexName)}: ${esc(fv.analysis.recommendation)} · משולב <strong>${fv.horizon.combined}</strong></span>`
+        + `<div class="pf-hz">ממוצע 150 ${signedPct(fv.method?.sma150Pct)} · ממוצע 200 ${signedPct(fv.trigger?.distancePct)}</div>`
+        + `<ul class="signals">${fv.reasons.slice(0, 2).map((s) => `<li>${esc(s)}</li>`).join("")}</ul>`
+        + (fv.fund ? `<div class="pf-risk">🎯 סטופ לקרן ≈ <strong>${fmt(fv.fund.stop)}</strong> (-${fv.fund.riskPct.toFixed(1)}%) · יעד ≈ ${fmt(fv.fund.target)}</div>` : "");
     } else if (h.triggerIndex) {
       const idx = idxBySymbol.get(h.triggerIndex);
-      if (idx) {
+      const trigger = leverageTriggers?.get(h.triggerIndex);
+      if (trigger) {
+        const st = leverageStatus(trigger, idx?.name ?? h.triggerIndex);
+        status = `<span class="pf-trigger ${st.ok ? "ok" : "warn"}">${st.ok ? "✅" : "⚠️"} ${esc(st.text)}</span>`;
+      } else if (idx) {
         const ok = idx.indicators.trendUp;
         status = `<span class="badge ${stanceClass(idx.stance)}">${esc(idx.stance)}</span> <span class="pf-trigger ${ok ? "ok" : "warn"}">${ok ? `✅ ממוצע ${PARAMS.smaShort} מעל ${PARAMS.smaLong}` : `⚠️ ממוצע ${PARAMS.smaShort} מתחת ל-${PARAMS.smaLong}`} (${esc(idx.name)})</span>`;
       } else {
         status = `<span class="pf-trigger na">אין נתוני מדד ייחוס עדיין</span>`;
       }
     } else {
-      status = `<span class="pf-trigger na">אין ניתוח טכני זמין</span>`;
+      const u = underlying?.find((x) => x.taseNumber === h.taseNumber);
+      status = u
+        ? `<span class="pf-trigger ${u.hit ? "warn" : "ok"}">${u.hit ? "⚠️" : "✅"} ${esc(underlyingText(u))}</span>`
+        : `<span class="pf-trigger na">אין ניתוח טכני זמין</span>`;
     }
 
-    if (!r) status += `<div class="coverage-note">${price != null ? "מחיר בלבד" : "מחיר חסר"}; ללא ציון או סטופ. מדד ייחוס אינו ניתוח של הקרן.</div>`;
+    if (!r) status += `<div class="coverage-note">${fundByName.has(h.name)
+      ? `ניתוח לפי המדד, לא לפי מחיר הקרן; הסטופ לקרן הוא קירוב${(fundByName.get(h.name)!.leverage !== 1) ? " (מרחק במדד × המינוף)" : ""}.`
+      : `${price != null ? "מחיר בלבד" : "מחיר חסר"}; ללא ציון או סטופ. מדד ייחוס אינו ניתוח של הקרן.`}</div>`;
 
     if (h.alertBelow != null && price != null && price < h.alertBelow) {
       status += `<div class="pf-alert">🚨 מתחת לרמת הבקרה (${h.alertBelow.toLocaleString("he-IL")}) — לשקול בחינה מחדש</div>`;
@@ -319,8 +390,8 @@ function renderPortfolioSection(
     const chart = h.symbol ? sparkline(sparkCloses?.get(h.symbol), r?.risk?.stop ?? r?.sequenceStop ?? null) : "";
 
     return `<tr>
-      <td class="name">${esc(h.name)}${h.note ? ` <small>${esc(h.note)}</small>` : ""}</td>
-      <td class="num">${h.entryPrice.toLocaleString("he-IL", { maximumFractionDigits: 2 })}</td>
+      <td class="name">${esc(h.name)}${h.core ? ` <span class="core-tag">ליבה</span>` : ""}${h.note ? ` <small>${esc(h.note)}</small>` : ""}</td>
+      <td class="num">${h.entryPrice != null ? h.entryPrice.toLocaleString("he-IL", { maximumFractionDigits: 2 }) : `<span class="pl na" title="ללא מחיר עלות">—</span>`}</td>
       <td class="num">${price != null ? price.toLocaleString("he-IL", { maximumFractionDigits: 2 }) : "—"}${price != null ? `<div>${quoteChip(quoteStamps?.get(h.name), generatedAt)}</div>` : ""}</td>
       <td class="num">${plHtml}</td>
       <td class="spark-cell">${chart}</td>
@@ -337,6 +408,26 @@ function renderPortfolioSection(
         <tbody>${rows}</tbody>
       </table>
     </div>
+  </section>`;
+}
+
+/** מקטע החזקות ליבה (למשל NVIDIA): כרטיס קבוע עם חוכמת המונים, כוכבים ואזור חיזוק. */
+function renderCoreSection(results: AnalysisResult[], horizons?: Map<string, HorizonInfo>): string {
+  const core = PORTFOLIO.filter((h) => h.core && h.symbol);
+  if (!core.length) return "";
+  const bySymbol = new Map(results.map((r) => [r.symbol, r]));
+  const cards = core.map((h) => {
+    const hz = horizons?.get(h.symbol!);
+    const zone = hz?.topUp?.zone ?? "none";
+    return `<article class="core-card">
+      <header><h3>${esc(h.name)} <small>${esc(h.symbol!)}</small></h3>${hz?.topUp ? `<span class="core-zone zone-${zone}">חיזוק: ${esc(hz.topUp.label)}</span>` : ""}</header>
+      <ul>${coreHoldingLines(h, bySymbol.get(h.symbol!), hz).map((line) => `<li>${esc(line)}</li>`).join("")}</ul>
+    </article>`;
+  }).join("");
+  return `<section id="core" class="core-holdings">
+    <h2>ניתוח החזקות ליבה</h2>
+    <div class="core-grid">${cards}</div>
+    <p class="note">החזקות קבועות — הדוח לא ממליץ למכור אותן, רק מציג רמות לבחינה ואזור חיזוק. חוכמת המונים בסגנון TipRanks (אנליסטים, שינויי המלצות, מקורבים, מוסדיים); כוכבים בסגנון Morningstar — קירוב לפי יעד האנליסטים ופיזור היעדים, לא מודל שווי פנימי; RS בסגנון IBD. אזור החיזוק: מתוח מעל 10% מממוצע 50 או RSI 70+, טוב בתיקון לממוצע 50, ב-15% מתחת לשיא או ב-4 כוכבים ומעלה.</p>
   </section>`;
 }
 
@@ -476,6 +567,10 @@ function holdingSeverity(
       severity += 1;
       reasons.push("מגמה ארוכת טווח שלילית יחד עם חולשה יומית.");
     }
+    if (hz?.factor && hz.factor.rank < 30 && hz.factor.aboveSma200 === false) {
+      severity += 2;
+      reasons.push(`דירוג פקטורים נמוך (${hz.factor.rank}) והמחיר מתחת לממוצע 200.`);
+    }
     if (h.alertBelow != null && r.price < h.alertBelow) {
       severity += 2;
       reasons.push(`🚨 מתחת לרמת הבקרה שהוגדרה (${h.alertBelow.toLocaleString("he-IL")}).`);
@@ -506,20 +601,99 @@ function holdingSeverity(
       reasons.push(`📰 כותרת שלילית טרייה: "${freshNeg[0].title.slice(0, 90)}".`);
     }
     // מימוש רווח: פוזיציה רווחית ומתוחה קיצונית — לא איתות מכירה מלא אלא הקטנת סיכון
-    const plPct = ((r.price - h.entryPrice) / h.entryPrice) * 100;
-    if (plPct > 8 && (r.indicators.stochK ?? 0) >= 90 && (r.indicators.rsi ?? 0) >= 68) {
+    const plPct = plPctOf(r.price, h.entryPrice);
+    if (plPct != null && plPct > 8 && (r.indicators.stochK ?? 0) >= 90 && (r.indicators.rsi ?? 0) >= 68) {
       severity += 1;
       reasons.push(`רווח ${plPct.toFixed(1)}% עם מתיחות קיצונית (סטוכסטי ${r.indicators.stochK?.toFixed(0)}, RSI ${r.indicators.rsi?.toFixed(0)}) — לשקול מימוש חלקי.`);
     }
   return { severity, reasons };
 }
 
-/** Action level for a held position, from the same severity scale as the sell section. */
-function holdingAction(severity: number): { label: string; cls: string } {
+/** Action level for a held position, from the same severity scale as the sell section. Core holdings are never told to exit. */
+function holdingAction(severity: number, core = false): { label: string; cls: string } {
+  if (core) return severity >= 3 ? { label: "ליבה · לבחינה", cls: "act-tight" } : { label: "ליבה · להחזיק", cls: "act-hold" };
   if (severity >= 5) return { label: "לצאת", cls: "act-exit" };
   if (severity >= 4) return { label: "לצמצם", cls: "act-reduce" };
   if (severity >= 3) return { label: "להדק סטופ", cls: "act-tight" };
   return { label: "להחזיק", cls: "act-hold" };
+}
+
+/** SMA200 trigger status for a leveraged/index holding (display only). */
+function leverageStatus(trigger: LeverageTrigger, indexName: string): { label: string; cls: string; rank: number; text: string; ok: boolean } {
+  const sign = trigger.distancePct >= 0 ? "+" : "";
+  const text = `${indexName}: ${trigger.aboveSma200 ? "מעל" : "מתחת ל"}ממוצע 200 (${sign}${trigger.distancePct.toFixed(1)}%) · ירידה מהשיא ${trigger.drawdownPct.toFixed(1)}%${trigger.sma50BelowSma200 ? " · ממוצע 50 מתחת ל-200" : ""}`;
+  if (!trigger.aboveSma200) return { label: "מתחת לממוצע 200", cls: "act-reduce", rank: 4, text, ok: false };
+  if (trigger.warning) return { label: "אזהרה מוקדמת", cls: "act-tight", rank: 3, text, ok: false };
+  return { label: "להחזיק", cls: "act-hold", rank: 0, text, ok: true };
+}
+
+function renderMacroSection(macro: MacroView | undefined): string {
+  if (!macro) return "";
+  const flags = macro.flags.length
+    ? `<ul class="signals">${macro.flags.map((f) => `<li><strong>${esc(f.label)}</strong> — ${esc(f.detail)}</li>`).join("")}</ul>`
+    : `<p class="empty">אין דגלי מאקרו פעילים (נפט, VIX, תשואות, שקל).</p>`;
+  const examples = macro.geo.examples.length ? `<ul class="signals">${macro.geo.examples.map((e) => `<li>${esc(e.title)} <span class="meta">(${esc(e.source)})</span></li>`).join("")}</ul>` : "";
+  const percentile = macro.geo.percentile != null ? ` · אחוזון <bdi>${macro.geo.percentile}</bdi> מול 60 הימים האחרונים` : " · אין עדיין 20 ימי היסטוריה להשוואה";
+  return `<section class="macro">
+    <h2>מאקרו וגאופוליטיקה</h2>
+    ${flags}
+    <p>עוצמת כותרות גאופוליטיות: <strong>${esc(macro.geo.level)}</strong> (${macro.geo.count} מתוך ${macro.geo.total} כותרות${percentile})</p>
+    ${examples}
+    <p class="note">הדגלים מוצגים להקשר ולהערת המלצת היום בלבד; הם אינם משנים ציוני מניות.</p>
+  </section>`;
+}
+
+export function renderCreatorSection(view: CreatorView | undefined): string {
+  if (!view) return "";
+  const day = (iso: string) => {
+    const d = new Date(iso);
+    return Number.isFinite(d.getTime()) ? new Intl.DateTimeFormat("he-IL", { timeZone: "Asia/Jerusalem", day: "numeric", month: "numeric" }).format(d) : "";
+  };
+  const videos = view.videos.length
+    ? `<ul class="signals">${view.videos.slice(0, 10).map((v) => `<li>${v.isNew ? "<strong>🆕</strong> " : ""}<bdi>${esc(day(v.published))}</bdi> · ${safeLink(v.url) ? `<a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.title)}</a>` : esc(v.title)}${v.blurb ? `<div class="meta">${esc(v.blurb.slice(0, 220))}</div>` : ""}</li>`).join("")}</ul>`
+    : `<p class="empty">לא התקבלו סרטונים מהשבוע האחרון (אין סרטונים חדשים, או שהמשיכה מיוטיוב נכשלה — ראו "בריאות הנתונים").</p>`;
+  const num = (v: number | null) => (v == null ? "—" : `<bdi>${fmt(v)}</bdi>`);
+  const rowHtml = (r: CreatorRow) => `<tr><td class="name">${esc(r.name)} <span class="meta">${esc(r.symbol)}</span>${r.held ? " ⭐" : ""}</td><td>${esc(SETUP_LABEL[r.setup.status])}</td><td class="num">${num(r.price)}</td><td class="num">${num(r.setup.trigger)}</td><td class="num">${num(r.setup.stop)}</td><td class="num">${num(r.setup.target)}</td><td class="num">${num(r.setup.rr)}</td><td class="num">${num(r.combined)}</td><td>${esc(r.verdict)}</td></tr>`;
+  const table = (rows: CreatorRow[]) => `<div class="table-wrap"><table><thead><tr><th>נייר</th><th>מבנה</th><th>מחיר</th><th>טריגר</th><th>סטופ</th><th>יעד</th><th>סיכוי/סיכון</th><th>משולב</th><th>לפי השיטה</th></tr></thead><tbody>${rows.map(rowHtml).join("")}</tbody></table></div>`;
+  const rules = `<div class="table-wrap"><table><thead><tr><th>הכלל שלו</th><th>מקור</th><th>מה הוא עושה בדוח</th></tr></thead><tbody>${METHOD_RULES.map((r) => `<tr><td>${esc(r.rule)}</td><td class="meta">${esc(r.source)}</td><td>${esc(r.effect)}</td></tr>`).join("")}</tbody></table></div>`;
+  const pct = (v: number | null) => (v == null ? "—" : `<bdi class="${v >= 0 ? "up" : "down"}">${v >= 0 ? "+" : ""}${v.toFixed(1)}%</bdi>`);
+  const holdingRows = view.holdings.map((h) => `<tr><td class="name">${esc(h.name)} <span class="meta">${esc(h.id)}</span></td><td>${h.basis === "index" ? `מדד ייחוס ${esc(h.basisName ?? "")}` : "הגרף של הנייר"}</td><td class="num">${num(h.price)}</td><td class="num">${num(h.check.sma150)}</td><td class="num">${pct(h.check.sma150Pct)}</td><td>${esc(h.verdict)}</td></tr>`).join("");
+  const holdings = view.holdings.length
+    ? `<div class="table-wrap"><table><thead><tr><th>החזקה</th><th>נבדק לפי</th><th>מחיר / ערך המדד</th><th>ממוצע 150</th><th>מרחק</th><th>לפי הכללים שלו</th></tr></thead><tbody>${holdingRows}</tbody></table></div>`
+    : `<p class="empty">אין נתוני מחיר להחזקות בהרצה זו.</p>`;
+  return `<section id="creator" class="creator">
+    <h2>${esc(view.channels.join(", "))} — עדכונים ושיטה</h2>
+    <h3>הכללים שמופעלים על ההמלצות</h3>
+    ${rules}
+    <p class="note">מקור הכללים: תיאורי הסרטונים ביוטיוב (לא תמלול). מועמדת קנייה שנופלת על אחד מהם מופיעה ב"מועמדות שנפסלו" עם הסיבה.</p>
+    <h3>ההחזקות שלי לפי הכללים</h3>
+    ${holdings}
+    ${view.holdingsWithoutData.length ? `<p class="note">ללא היסטוריית מחירים בהרצה זו: ${esc(view.holdingsWithoutData.join(", "))}</p>` : ""}
+    ${view.concentration ? `<p class="note">⚠️ ריכוזיות: ${esc(view.concentration)}</p>` : ""}
+    <p class="note">קרן נבדקת לפי מדד הייחוס שלה, לא לפי מחיר הקרן. בהחזקת ליבה השורה היא לבחינה בלבד, לא הוראת מכירה.</p>
+    <h3>סרטונים מ-7 הימים האחרונים</h3>
+    ${videos}
+    <h3>ניירות שהוזכרו (⭐ = בתיק)</h3>
+    ${view.mentions.length ? table(view.mentions) : `<p class="empty">לא זוהו אזכורים של ניירות עם נתוני מחיר.</p>`}
+    ${view.otherMentions.length ? `<p class="note">הוזכרו גם (ללא נתוני מחיר בהרצה זו): ${esc(view.otherMentions.join(", "))}</p>` : ""}
+    <h3>רשימת המעקב לפי השיטה שלו — שינוי מגמה (Edwards &amp; Magee)</h3>
+    ${view.setups.length ? table(view.setups.slice(0, 20)) : `<p class="empty">אין מבני שינוי מגמה ברשימה.</p>`}
+    <p class="note">מבנה = נפילה של 15%+ מהשיא, שפל עולה אחרי התחתית וקו שיאים יורדים. טריגר = השיא היורד האחרון; סטופ = מתחת לשפל העולה (חצי ATR); יעד = מהלך מדוד (גובה הבסיס מעל הטריגר), לכל היותר השיא הקודם. הכללים (לא נכנסים לפני דוח, חוק 3 הימים, לא רודפים) מסכמים את מה שהוא מלמד בערוץ; הזיהוי אוטומטי ואינו המלצה שלו. תוכן הסרטונים מוצג מתוך התיאור ביוטיוב בלבד.</p>
+  </section>`;
+}
+
+function renderExposureSection(rows: SensitivityRow[] | undefined): string {
+  if (!rows?.length) return "";
+  const cell = (v: number | null) => (v == null ? "—" : `<bdi class="${v >= 0 ? "up" : "down"}">${v >= 0 ? "+" : ""}${v.toFixed(1)}%</bdi>`);
+  const body = rows.map((r) => `<tr><td class="name">${esc(r.name)}${r.leverage !== 1 ? ` <span class="meta">(×${r.leverage})</span>` : ""}</td><td class="num">${cell(r.brentUp10)}</td><td class="num">${cell(r.ndxDown5)}</td><td class="num">${cell(r.ta35Down5)}</td><td class="num">${cell(r.usdUp3)}</td></tr>`).join("");
+  return `<section class="exposure">
+    <h2>רגישות התיק לתרחישים</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>החזקה</th><th>ברנט +10%</th><th>נאסד"ק 100 −5%</th><th>ת"א 35 −5%</th><th>דולר-שקל +3%</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+    <p class="note">תנועה משוערת של כל החזקה לפי בטא של 60 ימי מסחר מול כל גורם בנפרד (לא מצטבר). לקרן שאינה מנותחת משמש מדד הייחוס, כפול המינוף שלה. הערכה סטטיסטית, לא תחזית.</p>
+  </section>`;
 }
 
 /**
@@ -530,10 +704,10 @@ export function holdingSellAlerts(
   results: AnalysisResult[],
   horizons?: Map<string, HorizonInfo>,
   news?: Map<string, StockNews>
-): { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null }[] {
+): { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null; core: boolean }[] {
   const bySymbol = new Map(results.map((r) => [r.symbol, r]));
 
-  type Alert = { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null };
+  type Alert = { name: string; symbol: string; price: number; severity: number; reasons: string[]; stop: number | null; core: boolean };
   const held: Alert[] = [];
 
   for (const h of PORTFOLIO) {
@@ -541,7 +715,7 @@ export function holdingSellAlerts(
     const r = bySymbol.get(h.symbol);
     if (!r) continue;
     const { severity, reasons } = holdingSeverity(h, r, horizons?.get(r.symbol), news);
-    if (severity > 0) held.push({ name: h.name, symbol: r.symbol, price: r.price, severity, reasons, stop: r.risk?.stop ?? r.sequenceStop });
+    if (severity > 0) held.push({ name: h.name, symbol: r.symbol, price: r.price, severity, reasons, stop: r.risk?.stop ?? r.sequenceStop, core: h.core === true });
   }
 
   held.sort((a, b) => b.severity - a.severity);
@@ -559,11 +733,13 @@ function renderSellSection(
   const heldHtml = held.length
     ? held
         .map((a) => {
-          const level = a.severity >= 5 ? "מכירה / יציאה" : a.severity >= 4 ? "צמצום פוזיציה" : "סטופ הדוק";
-          const cls = a.severity >= 5 ? "sell-urgent" : a.severity >= 4 ? "sell-reduce" : "sell-watch";
-          const stopLine = a.stop != null
-            ? `<p class="sell-stop">רמת יציאה: <strong>${a.stop.toLocaleString("he-IL", { maximumFractionDigits: 2 })}</strong> — סגירה מתחתיה = יציאה.</p>`
-            : "";
+          const level = a.core ? "החזקת ליבה — רמות לבחינה" : a.severity >= 5 ? "מכירה / יציאה" : a.severity >= 4 ? "צמצום פוזיציה" : "סטופ הדוק";
+          const cls = a.core ? "sell-watch" : a.severity >= 5 ? "sell-urgent" : a.severity >= 4 ? "sell-reduce" : "sell-watch";
+          const stopLine = a.stop == null
+            ? ""
+            : a.core
+            ? `<p class="sell-stop">רמה לבחינה: <strong>${a.stop.toLocaleString("he-IL", { maximumFractionDigits: 2 })}</strong> — החזקת ליבה קבועה; לא המלצת מכירה.</p>`
+            : `<p class="sell-stop">רמת יציאה: <strong>${a.stop.toLocaleString("he-IL", { maximumFractionDigits: 2 })}</strong> — סגירה מתחתיה = יציאה.</p>`;
           return `<article class="sell-card ${cls}">
             <header>
               <span class="sell-level">${level}</span>
@@ -606,6 +782,79 @@ function renderSellSection(
   </section>`;
 }
 
+const FUND_ACTION_REC: Record<FundAction, string> = { "קנייה / חיזוק": "קנייה", "החזקה": "החזקה", "צמצום / מכירה": "הימנעות / מכירה" };
+const signedPct = (v: number | null | undefined): string => (v == null ? "—" : `<bdi class="${v >= 0 ? "up" : "down"}">${v >= 0 ? "+" : ""}${v.toFixed(1)}%</bdi>`);
+
+/** The funds read through their reference index: full engine on the index, decision and fund-equivalent levels. */
+export function renderFundIndexSection(views: FundIndexView[] | undefined): string {
+  if (!views?.length) return "";
+  const rows = views.map((v) => {
+    const a = v.analysis;
+    const hz = v.horizon;
+    const levels = v.fund
+      ? `סטופ ≈ <bdi>${fmt(v.fund.stop)}</bdi> (<bdi>-${v.fund.riskPct.toFixed(1)}%</bdi>) · יעד ≈ <bdi>${fmt(v.fund.target)}</bdi> (<bdi>+${v.fund.rewardPct.toFixed(1)}%</bdi>)`
+      : "—";
+    const indexLevels = a.risk ? `סטופ <bdi>${fmt(a.risk.stop)}</bdi> · יעד <bdi>${fmt(a.risk.target)}</bdi> · סיכוי/סיכון ${a.risk.rr.toFixed(1)}` : "—";
+    const sma200Pct = v.sma200 ? ((a.price / v.sma200 - 1) * 100) : null;
+    return `<tr>
+      <td class="name">${esc(v.name)} <span class="meta">${esc(v.id)}</span>${v.leverage !== 1 ? ` <span class="meta">(×${v.leverage})</span>` : ""}</td>
+      <td>${esc(v.indexName)} <span class="meta">${esc(v.indexSymbol)}</span>${v.historySymbol !== v.indexSymbol ? `<div class="meta">היסטוריה: ${esc(v.historySymbol)}</div>` : ""}</td>
+      <td><span class="badge ${recClass(FUND_ACTION_REC[v.action])}">${esc(v.action)}</span></td>
+      <td class="num"><bdi>${fmt(a.price)}</bdi></td>
+      <td>יומי <strong>${a.score}</strong> · שבועי <strong>${hz.weeklyScore ?? "—"}</strong> · ארוך ${ltBadge(hz.longTerm)} · משולב <strong>${hz.combined}</strong><div class="meta">${esc(a.recommendation)}</div></td>
+      <td>150: ${signedPct(v.method?.sma150Pct)} · 200: ${signedPct(sma200Pct)}</td>
+      <td>${indexLevels}</td>
+      <td>${levels}</td>
+      <td><ul class="signals">${v.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul></td>
+    </tr>`;
+  }).join("");
+  const notes = [...new Set(views.flatMap((v) => (v.historyNote ? [v.historyNote] : [])))];
+  return `<section id="funds" class="funds">
+    <h2>הקרנות שלי — ניתוח לפי המדד</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>קרן</th><th>מדד</th><th>פעולה</th><th>המדד</th><th>ציונים</th><th>מרחק מממוצע</th><th>סטופ ויעד למדד</th><th>סטופ ויעד לקרן (≈)</th><th>למה</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <p class="note">המנוע המלא (יומי, שבועי, ארוך טווח, כללי מיכה סטוקס) רץ על נרות המדד. צמצום: קרן ממונפת כשהמדד מתחת לממוצע 200, או מדד מתחת לממוצע 150 שחלש בכל האופקים. חיזוק: המלצת קנייה למדד, משולב ${FUND_BUY_MIN_COMBINED}+, אף כלל לא חוסם, ובממונפת גם מעל ממוצע 200 ובלי ריסק-אוף. הסטופ והיעד לקרן = המרחק במדד כפול המינוף — קירוב, כי קרן ממונפת מתאזנת כל יום.</p>
+    ${notes.map((n) => `<p class="note">${esc(n)}.</p>`).join("")}
+  </section>`;
+}
+
+/** Buy and sell lists per exchange, each judged by its own market regime. */
+export function renderMarketRecsSection(input: ReportHtmlInput): string {
+  if (!input.horizons?.size) return "";
+  const blocks = marketRecommendations(input).map((m) => {
+    const regime = m.regime ? `<p class="pick-regime">🧭 מצב שוק ${esc(m.label)}: <strong>${esc(m.regime.label)}</strong> (ציון ${m.regime.score}, רוחב ${m.regime.breadthPct.toFixed(0)}%) · לפי ${esc(m.regime.benchmarkName)}</p>` : "";
+    const candidate = (x: { r: AnalysisResult; hz: HorizonInfo }, label: string) => `<li><span class="meta">${label}</span> <strong>${esc(x.r.name)}</strong> <small>${esc(x.r.symbol)}</small> · מחיר <bdi>${fmt(x.r.price)}</bdi> · משולב ${x.hz.combined}${x.hz.factor ? ` · דירוג פקטורים ${x.hz.factor.rank}` : ""}${x.r.risk ? ` · סטופ <bdi>${fmt(x.r.risk.stop)}</bdi> · יעד <bdi>${fmt(x.r.risk.target)}</bdi> · סיכוי/סיכון ${x.r.risk.rr.toFixed(1)}` : ""}</li>`;
+    const buys = [
+      ...(m.pick.main ? [candidate(m.pick.main, "ראשונה")] : []),
+      ...m.pick.alts.map((x) => candidate(x, "חלופה")),
+      ...(m.strengthen ? [candidate(m.strengthen, "חיזוק החזקה")] : []),
+      ...m.fundBuys.map((f) => `<li><span class="meta">חיזוק קרן</span> <strong>${esc(f.name)}</strong> · לפי ${esc(f.indexName)} · ${esc(f.reasons[0] ?? "")}${f.fund ? ` · סטופ ≈ <bdi>${fmt(f.fund.stop)}</bdi>` : ""}</li>`),
+    ];
+    const sells = m.sells.map((s) => `<li><span class="meta">${esc(s.action)}</span> <strong>${esc(s.name)}</strong> <small>${esc(s.id)}</small>${s.price != null ? ` · מחיר <bdi>${fmt(s.price)}</bdi>` : ""}${s.level != null ? ` · רמת יציאה <bdi>${fmt(s.level)}</bdi>` : ""} — ${esc(s.reasons.join("; "))}</li>`);
+    const avoid = m.avoid.map((a) => `<li><strong>${esc(a.name)}</strong> <small>${esc(a.symbol)}</small> · ציון ${a.score} — ${esc(a.reason)}</li>`);
+    const rejected = m.pick.rejected.length
+      ? `<details class="pick-rejected"><summary>נפסלו (${m.pick.rejected.length})</summary><ul>${m.pick.rejected.map((x) => `<li><strong>${esc(x.name)}</strong> <small>${esc(x.symbol)}</small> — ${esc(x.reason)}</li>`).join("")}</ul></details>`
+      : "";
+    return `<article class="market-recs">
+      <h3>${esc(m.label)} <span class="meta">${m.analyzed ? `${m.analyzed} ניירות נותחו` : "קרנות לפי מדד"}</span></h3>
+      ${regime}
+      <h4>קנייה</h4>
+      ${buys.length ? `<ul class="signals">${buys.join("")}</ul>` : `<p class="empty">אין מועמדת שעוברת את מסנני האיכות וכללי מיכה סטוקס — עדיף להמתין.</p>`}
+      ${rejected}
+      <h4>מכירה / צמצום בתיק</h4>
+      ${sells.length ? `<ul class="signals">${sells.join("")}</ul>` : `<p class="empty">אין החזקה בבורסה הזו עם התראת יציאה לפי סף המנוע.</p>`}
+      ${avoid.length ? `<h4>להימנע מקנייה (איתות מכירה טרי)</h4><ul class="signals">${avoid.join("")}</ul>` : ""}
+    </article>`;
+  }).join("");
+  return `<section id="markets" class="markets">
+    <h2>המלצות לפי בורסה — תל אביב וארה"ב</h2>
+    <div class="market-grid">${blocks}</div>
+    <p class="note">כל בורסה נבחנת לפי מצב השוק שלה (ת"א 125 / S&P 500 ורוחב השוק המקומי). אותם מסננים כמו המלצת היום: נזילות, ציון, סיכוי/סיכון 1.5+, דגלים אדומים וכללי מיכה סטוקס. קרן מופיעה בבורסה של המדד שלה. אין זו הוראת מסחר.</p>
+  </section>`;
+}
+
 /** המלצת הרכישה היומית — המועמדות הטובות ביותר בשקלול שלושת האופקים, עם התחשבות בחפיפה לתיק. */
 function renderDailyPickSection(
   results: AnalysisResult[],
@@ -623,8 +872,10 @@ function renderDailyPickSection(
       : "";
   };
 
-  const breakdown = (x: { r: AnalysisResult; hz: HorizonInfo }): string =>
-    `יומי <strong>${x.r.score}</strong> · שבועי <strong>${x.hz.weeklyScore ?? "—"}</strong> · ארוך ${ltBadge(x.hz.longTerm)} · התכנסות: ${x.hz.alignment}${x.hz.alignment === "מלאה" ? " 🚀" : ""}`;
+  const breakdown = (x: { r: AnalysisResult; hz: HorizonInfo }): string => {
+    const stars = starRating(x.r.price, x.hz.crowd);
+    return `יומי <strong>${x.r.score}</strong> · שבועי <strong>${x.hz.weeklyScore ?? "—"}</strong> · ארוך ${ltBadge(x.hz.longTerm)}${x.hz.factor ? ` · פקטורים <strong>${x.hz.factor.score}</strong> (דירוג ${x.hz.factor.rank})` : ""}${x.hz.rs != null ? ` · RS <strong>${x.hz.rs}</strong>` : ""}${stars ? ` · <span class="stars" title="בסגנון Morningstar: מחיר מול יעד האנליסטים, אי-ודאות ${stars.uncertainty}">${starText(stars.stars)}</span>` : ""} · התכנסות: ${x.hz.alignment}${x.hz.alignment === "מלאה" ? " 🚀" : ""}${x.hz.extended ? `<div class="pick-overlap">⚠️ מתוח ${x.hz.extended.pct.toFixed(1)}% מעל נקודת הפריצה (${fmt(x.hz.extended.pivot)}) — כלל IBD: לא לרדוף מעל 5%, לחכות לתיקון</div>` : ""}`;
+  };
 
   /** טבלת ניהול הסיכון של ההמלצה: כניסה, סטופ, יעד, יחס וגודל פוזיציה. */
   const riskBox = (r: AnalysisResult): string => {
@@ -663,13 +914,15 @@ function renderDailyPickSection(
         <span class="pick-combined">משולב ${m.hz.combined}</span>
       </div>
       <p class="pick-breakdown">${breakdown(m)} · מחיר ${fmt(m.r.price)}</p>
+      ${gradeHtml(m.hz.grades)}
       ${overlapNote(m.r.symbol)}
       ${rsNote}
+      ${m.hz.method ? `<div class="pick-rs">✅ עברה את כללי מיכה סטוקס: ${esc(methodPassLine(m.hz.method))}</div>` : ""}
       ${riskBox(m.r)}
       <ul class="signals">${topSignals}</ul>
     </div>`;
   } else {
-    mainHtml = `<p class="empty">אף מועמדת לא עוברת היום את ספי האיכות (משולב ≥${sel.threshold}, יומי ≥15, נזילות גבוהה, יחס סיכוי/סיכון ≥${RISK.minRR}) — עדיף להמתין ולא לכפות קנייה.</p>`;
+    mainHtml = `<p class="empty">אף מועמדת לא עוברת היום את ספי האיכות (משולב ≥${sel.threshold}, יומי ≥15, נזילות גבוהה, יחס סיכוי/סיכון ≥${RISK.minRR}) ואת כללי מיכה סטוקס (דוח בתוך 7 ימים, חוק 3 הימים, ממוצע 150) — עדיף להמתין ולא לכפות קנייה.</p>`;
   }
 
   const altsHtml = sel.alts.length
@@ -678,7 +931,7 @@ function renderDailyPickSection(
           (x) =>
             `<li><strong>${esc(x.r.name)}</strong> <small>${esc(x.r.symbol)}</small> — ${breakdown(x)}${
               x.r.risk ? ` · סטופ ${fmt(x.r.risk.stop)} · סיכוי/סיכון ${x.r.risk.rr.toFixed(1)}` : ""
-            }${overlapNote(x.r.symbol)}</li>`
+            }${gradeHtml(x.hz.grades)}${overlapNote(x.r.symbol)}</li>`
         )
         .join("")}</ul></div>`
     : "";
@@ -688,7 +941,7 @@ function renderDailyPickSection(
     : "";
 
   const rejectedHtml = sel.rejected.length
-    ? `<details class="pick-rejected"><summary>מועמדות שנפסלו על ניהול סיכון (${sel.rejected.length})</summary><ul>${sel.rejected
+    ? `<details class="pick-rejected"><summary>מועמדות שנפסלו על ניהול סיכון וכללי מיכה סטוקס (${sel.rejected.length})</summary><ul>${sel.rejected
         .map((x) => `<li><strong>${esc(x.name)}</strong> <small>${esc(x.symbol)}</small> — ${esc(x.reason)}</li>`)
         .join("")}</ul></details>`
     : "";
@@ -877,8 +1130,9 @@ export function renderReportHtml(input: ReportHtmlInput): string {
     ? (hasHz ? "דוח משולב — יומי · שבועי · ארוך טווח" : "דוח המלצות יומי")
     : "דוח המלצות שבועי";
   const hzOf = (sym: string) => horizons?.get(sym);
-  // מיון לפי הציון המשולב כשיש אופקים, אחרת לפי הציון היומי
-  const sortKey = (r: AnalysisResult) => hzOf(r.symbol)?.combined ?? r.score;
+  const hybridActive = !!horizons && [...horizons.values()].some((h) => h.engine === "hybrid");
+  // מיון לפי ציון הפקטורים (מנוע היברידי) או המשולב, אחרת לפי הציון היומי
+  const sortKey = (r: AnalysisResult) => hzOf(r.symbol)?.ranking ?? hzOf(r.symbol)?.combined ?? r.score;
   const sorted = [...results].sort((a, b) => sortKey(b) - sortKey(a));
 
   const indicesHtml = renderIndicesSection(indices, historicalForecasts, sparkCloses);
@@ -894,7 +1148,10 @@ export function renderReportHtml(input: ReportHtmlInput): string {
     signalDeltas,
     priceChecks,
     quoteStamps,
-    generatedAt
+    generatedAt,
+    input.leverageTriggers,
+    input.macro?.underlying,
+    input.fundViews
   );
   const pickHtml = renderDailyPickSection(results, horizons, regime, newsByStock);
   const sellHtml = renderSellSection(results, horizons, newsByStock);
@@ -914,7 +1171,9 @@ export function renderReportHtml(input: ReportHtmlInput): string {
       const hzCells = hasHz
         ? `<td class="num">${hz?.weeklyScore ?? "—"}</td>
         <td class="center">${ltBadge(hz?.longTerm ?? null)}</td>
-        <td class="num"><strong>${hz?.combined ?? "—"}</strong></td>`
+        <td class="num"><strong>${hz?.combined ?? "—"}</strong></td>
+        <td class="num" title="${hz?.factor ? `דירוג ${hz.factor.rank}` : ""}">${hz?.factor?.score ?? "—"}</td>
+        <td class="center grades-cell" title="${hz?.grades ? esc(gradeChips(hz.grades)) : ""}"><bdi dir="ltr">${gradeLetters(hz?.grades)}</bdi>${hz?.grades?.redFlags.length ? " 🚩" : ""}</td>`
         : "";
       return `<tr>
         <td class="rank">${i + 1}</td>
@@ -1031,8 +1290,8 @@ export function renderReportHtml(input: ReportHtmlInput): string {
   const sellCount = sorted.filter(
     (r) => r.recommendation === "הימנעות / מכירה"
   ).length;
-  const rankingColumns = ["#", "מניה", "סימול", "מחיר", "ציון", "Δ", ...(hasHz ? ["שבועי", "ארוך", "משולב"] : []), "המלצה", "RSI", "Stoch", "ADX", "מגמה", "חדשות"];
-  const numericColumns = new Set(["#", "מחיר", "ציון", "Δ", "שבועי", "משולב", "RSI", "Stoch", "ADX"]);
+  const rankingColumns = ["#", "מניה", "סימול", "מחיר", "ציון", "Δ", ...(hasHz ? ["שבועי", "ארוך", "משולב", "פקטורים", "ציונים"] : []), "המלצה", "RSI", "Stoch", "ADX", "מגמה", "חדשות"];
+  const numericColumns = new Set(["#", "מחיר", "ציון", "Δ", "שבועי", "משולב", "פקטורים", "RSI", "Stoch", "ADX"]);
   const health = summary.dataHealth;
   const barDates = [...new Set(Object.values(health?.latestBarDates ?? {}).filter((date): date is string => !!date && /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort();
   const freshness = barDates.length ? `${barDates[0]}${barDates.length > 1 ? ` / ${barDates[barDates.length - 1]}` : ""}` : "לא מתועד";
@@ -1073,7 +1332,7 @@ ${FONT_LINK}
   ${renderPortfolioBrief(input, summary)}
 
   <nav class="section-nav" aria-label="ניווט בדוח">
-    <a href="#summary">תקציר</a><a href="#alerts">התראות</a><a href="#portfolio">התיק שלי</a><a href="#rankings">דירוג מניות</a><a href="#evidence">ראיות</a><a href="#data-health">נתונים</a>
+    <a href="#summary">תקציר</a><a href="#alerts">התראות</a><a href="#portfolio">התיק שלי</a>${input.fundViews?.length ? `<a href="#funds">קרנות לפי מדד</a>` : ""}<a href="#core">ליבה</a>${input.horizons?.size ? `<a href="#markets">ת"א / ארה"ב</a>` : ""}<a href="#rankings">דירוג מניות</a>${input.creator ? `<a href="#creator">${esc(input.creator.channels[0] ?? "ערוצים")}</a>` : ""}<a href="#evidence">ראיות</a><a href="#data-health">נתונים</a>
   </nav>
 
   <section id="summary" class="executive" aria-labelledby="summary-title">
@@ -1100,9 +1359,17 @@ ${FONT_LINK}
 
   ${portfolioHtml}
 
+  ${renderFundIndexSection(input.fundViews)}
+
+  ${renderCoreSection(results, horizons)}
+
   ${pickHtml}
 
+  ${renderMarketRecsSection(input)}
+
   ${regimeHtml}
+  ${renderMacroSection(input.macro)}
+  ${renderCreatorSection(input.creator)}
 
   <div class="disclaimer">
     הדוח מבוסס על ניתוח טכני אוטומטי ואינו מהווה ייעוץ השקעות. השקעה בניירות ערך כרוכה
@@ -1116,7 +1383,7 @@ ${FONT_LINK}
     <div class="ranking-toolbar"><label for="ranking-search">חיפוש מניה או סימול</label><input id="ranking-search" type="search" autocomplete="off" aria-controls="ranking-table" /><output id="ranking-count" aria-live="polite">${sorted.length} מניות</output></div>
     <div class="table-wrap" tabindex="0" role="region" aria-label="טבלת המלצות מלאה">
       <table id="ranking-table">
-        <caption>סדר ברירת מחדל: ${hasHz ? "ציון משולב" : "ציון טכני"}</caption>
+        <caption>סדר ברירת מחדל: ${hybridActive ? "ציון פקטורים (מנוע היברידי)" : hasHz ? "ציון משולב" : "ציון טכני"}</caption>
         <thead><tr>
           ${rankingColumns.map((label, column) => `<th scope="col" aria-sort="none"><button type="button" class="sort-button" data-column="${column}" data-numeric="${numericColumns.has(label)}" aria-label="מיון לפי ${esc(label)}">${esc(label)} <span aria-hidden="true">↕</span></button></th>`).join("")}
         </tr></thead>
@@ -1124,6 +1391,8 @@ ${FONT_LINK}
       </table>
     </div>
     <p id="ranking-empty" class="empty" hidden>אין מניות תואמות לחיפוש.</p>
+    <p class="note">${esc(describeEngine(input.engine))}</p>
+    <p class="note">עמודת "ציונים" בסדר: מומנטום · רוויזיות · הפתעות · איכות · שווי · סיכון · קונצנזוס · ביקוש (A הטוב ביותר, — = אין מספיק נתונים, 🚩 = דגל אדום). איכות ושווי מושווים מול הסקטור כשיש בו 5 ניירות לפחות (Seeking Alpha); קונצנזוס = אנליסטים, יעדים, שינויי המלצות ומקורבים (TipRanks); ביקוש = מחזור בימי עלייה מול ימי ירידה (IBD). ${esc(describeGradeValidation(input.gradeValidation, GRADES_IN_RANKING))}</p>
   </section>
 
   <section class="buy-section">
@@ -1134,6 +1403,7 @@ ${FONT_LINK}
   ${renderPortfolioEvidence(historicalForecasts)}
   ${scorecardHtml}
   ${corrHtml}
+  ${renderExposureSection(input.exposure)}
 
   <section>
     <h2>פירוט מלא לכל המניות</h2>
@@ -1556,6 +1826,12 @@ tbody tr:nth-child(even){background:#fafbfc}tbody tr:hover{background:#edf0f3}
 .portfolio .name small{display:block;color:var(--muted);font-weight:400;font-size:12px}.pl{font-weight:600}
 .pf-score{font-size:12px;color:var(--muted);white-space:nowrap}.pf-trigger,.lt{font-size:12px;font-weight:600}.pf-trigger.warn{color:var(--hold)}
 .pf-hz,.pf-risk{font-size:12px;margin-top:4px}.pf-hz{color:var(--muted)}.pf-alert{margin-top:4px;font-size:12px;font-weight:600;color:var(--sell)}
+.core-tag{display:inline-block;font-size:11px;font-weight:600;padding:0 6px;border-radius:999px;background:#e5efe9;color:#146848}
+.core-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.core-card{border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0;overflow-wrap:anywhere}
+.core-card header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}.core-card h3{margin:0;font-size:16px}.core-card h3 small{color:var(--muted);font-weight:400}
+.core-card ul{margin:10px 0 0;padding-inline-start:18px;font-size:13px;line-height:1.8}.core-zone{font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px}
+.zone-good{background:#e5efe9;color:#146848}.zone-fair{background:#eef2f6;color:#265e87}.zone-stretched{background:#f8ece6;color:#ac303e}.stars{color:#ad781c;letter-spacing:1px}
+.grades{font-size:12px;margin-top:4px;font-weight:600}.grades-why{font-size:12px;color:var(--muted)}.grades-flag{font-size:12px;font-weight:600;color:var(--sell)}
 .coverage-note{font-size:12px;color:var(--hold);margin-top:4px;max-width:440px}.pf-delta{margin-top:4px;font-size:12px}
 .pf-delta ul{margin:4px 0;padding-inline-start:18px}.pf-delta .add{color:var(--buy)}.pf-delta .rem{color:var(--muted)}
 .spark-cell{width:140px}.spark{display:block;width:120px;height:32px;margin-top:4px;overflow:visible}
@@ -1572,6 +1848,7 @@ tbody tr:nth-child(even){background:#fafbfc}tbody tr:hover{background:#edf0f3}
 .pick-label{background:var(--accent)}.pick-combined,.regime-score,.pick-regime{color:var(--accent)}
 .pick-combined,.regime-score{font-size:17px;font-weight:700}.pick-breakdown{font-size:13px;margin:10px 0 4px}.pick-overlap{font-size:13px;color:var(--hold);margin-top:6px}
 .pick-rs,.pick-regime{font-size:13px;margin:6px 0}.pick-alts,.pick-rejected{margin-top:14px}
+.market-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:18px}.market-recs{border-top:3px solid var(--line);padding-top:10px;min-width:0}.market-recs h3{margin:0 0 4px}.market-recs h4{margin:12px 0 6px;font-size:14px}.market-recs .signals li{overflow-wrap:anywhere}
 .pick-strength,.sell-watchlist{margin-top:14px;border-top:1px solid var(--line);padding:12px 0;font-size:13px}
 .sell-watchlist h4,.pick-alts h4{margin:0 0 8px;font-size:14px}.sell-watchlist ul,.pick-alts ul,.pick-rejected ul{margin:0;padding-inline-start:18px;font-size:13px}.sell-watchlist li,.pick-alts li{margin-block:6px}
 .risk-box,.regime-metrics,.score-summary,.beta-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:16px;margin:14px 0}

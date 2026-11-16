@@ -1,4 +1,5 @@
 import { loadInstrumentConfig } from "./instruments.js";
+import type { GradeKey } from "./grades.js";
 
 const instrumentConfig = loadInstrumentConfig();
 
@@ -29,6 +30,37 @@ export const NEWS_FEEDS: { name: string; url: string }[] = [
   { name: "TheMarker - שוק ההון", url: "https://www.themarker.com/cmlink/1.145" },
   { name: "ynet כלכלה", url: "https://www.ynet.co.il/Integration/StoryRss6.xml" },
 ];
+
+/**
+ * World/geopolitical feeds — feed only the geopolitical index, never stock news sentiment.
+ * `topic` feeds are searches (Iran/Hormuz) that are geopolitical by construction: examples only, not the share.
+ */
+export const GEO_FEEDS: { name: string; url: string; topic: boolean }[] = [
+  { name: "Google News (geo)", topic: true, url: "https://news.google.com/rss/search?q=Iran+OR+Hormuz+OR+Hezbollah+OR+Houthi+OR+Gaza+OR+Israel+strike&hl=en-US&gl=US&ceid=US:en" },
+  { name: "Google News (עברית)", topic: true, url: "https://news.google.com/rss/search?q=%D7%90%D7%99%D7%A8%D7%90%D7%9F+OR+%D7%94%D7%95%D7%A8%D7%9E%D7%95%D7%96+OR+%D7%97%D7%99%D7%96%D7%91%D7%90%D7%9C%D7%9C%D7%94&hl=iw&gl=IL&ceid=IL:he" },
+  { name: "Bing News", topic: true, url: "https://www.bing.com/news/search?q=Iran+Hormuz+Israel&format=rss" },
+  { name: "BBC Middle East", topic: true, url: "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml" },
+  { name: "Times of Israel", topic: false, url: "https://www.timesofisrael.com/feed/" },
+  { name: "Globes English", topic: false, url: "https://en.globes.co.il/WebService/Rss/RssFeeder.asmx/FeederNode?iID=1725" },
+  { name: "CNBC World", topic: false, url: "https://www.cnbc.com/id/100727362/device/rss/rss.html" },
+];
+
+/** YouTube channels followed in every report (RSS, no login). */
+export const FOLLOWED_CHANNELS: { name: string; channelId: string }[] = [
+  { name: "מיכה סטוקס", channelId: "UCSxjNbPriyBh9RNl_QNSAtw" },
+];
+
+/** Names the creators use in Hebrew (or brand names) → Yahoo symbol, for mention matching. */
+export const CREATOR_ALIASES: Record<string, string> = {
+  "אנבידיה": "NVDA", "ספייס אקס": "SPCX", "SpaceX": "SPCX", "HP": "HPQ", "אינטל": "INTC", "גוגל": "GOOGL", "אלפבית": "GOOGL",
+  "אמזון": "AMZN", "מייקרוסופט": "MSFT", "אפל": "AAPL", "מטא": "META", "טסלה": "TSLA", "פלנטיר": "PLTR", "אורקל": "ORCL",
+  "ברודקום": "AVGO", "מייקרון": "MU", "אדובי": "ADBE", "ספוטיפיי": "SPOT", "האבספוט": "HUBS", "שופיפיי": "SHOP",
+  "קלאודפלר": "NET", "פורטינט": "FTNT", "סרוויס נאו": "NOW", "נטפליקס": "NFLX", "בואינג": "BA", "מאסטרקארד": "MA",
+  "אלי לילי": "LLY", "קטרפילר": "CAT", "אקסון מוביל": "XOM", "שברון": "CVX", "פייזר": "PFE", "רדיט": "RDDT",
+  "סנדיסק": "SNDK", "קוואלקום": "QCOM", "אובר": "UBER", "נובו נורדיסק": "NVO", "מקדונלדס": "MCD",
+  "קראודסטרייק": "CRWD", "פאלו אלטו": "PANW", "פלו אלטו": "PANW", "צ'ק פוינט": "CHKP", "זיסקיילר": "ZS", "רובריק": "RBRK",
+  "נביוס": "NBIS", "סיסקו": "CSCO", "וולמארט": "WMT", "הום דיפו": "HD", "טרגט": "TGT", "דיסני": "DIS", "עליבאבא": "BABA",
+};
 
 /**
  * עקיפת אימות תעודת TLS — נדרש בסביבות עם פרוקסי ארגוני המבצע
@@ -70,13 +102,26 @@ export const CANDLE_CACHE = {
   ttlMinutes: envNumber("CANDLE_CACHE_TTL_MIN", 45),
 };
 
+/** מקביליות משיכת נתונים — יורדת אוטומטית ל-1 אחרי חסימת קצב (429). */
+export const FETCH = {
+  concurrency: envNumber("FETCH_CONCURRENCY", 3),
+};
+
+/**
+ * ציוני ראיות שאושרו על ידי המשתמש להצטרף לדירוג אחרי שעברו בדיקה קדימה (npm run backtest).
+ * ריק = הציונים מוצגים בלבד. ערכים אפשריים: momentum, revisions, surprise, quality, value, risk.
+ */
+export const GRADES_IN_RANKING: GradeKey[] = [];
+
 /** החזקה בתיק האישי — להצגת מצב התיק בדוח. */
 export interface HoldingDef {
   /** סימול Yahoo אם הנייר מנותח ב-WATCHLIST (מניות). */
   symbol?: string;
   name: string;
-  /** מחיר כניסה (אג' למניות ת"א / $ לניירות חו"ל / מחיר קרן). */
-  entryPrice: number;
+  /** מחיר כניסה (אג' למניות ת"א / $ לניירות חו"ל / מחיר קרן); חסר רק בהחזקת ליבה ללא עלות ידועה. */
+  entryPrice?: number;
+  /** החזקת ליבה קבועה — לעולם לא מקבלת המלצת יציאה/צמצום, רק "רמות לבחינה". */
+  core?: boolean;
   note?: string;
   /** קרנות שאינן ב-Yahoo — מדד ייחוס למעקב טריגרים (ממוצעים קצר/ארוך). */
   triggerIndex?: string;
@@ -86,9 +131,24 @@ export interface HoldingDef {
   investingUrl?: string;
   /** מספר נייר בבורסת ת"א — לאימות צולב של המחיר מול אתר הבורסה. */
   taseNumber?: string;
+  /** סקטור החשיפה של ההחזקה (כולל קרנות) — לחפיפה ולשורת הריכוזיות. */
+  sector?: string;
 }
 
 export const PORTFOLIO: HoldingDef[] = instrumentConfig.portfolio;
+
+/** Rules on an underlying market for funds without their own chart; a breach turns into an action in the report. */
+export const UNDERLYING_TRIGGERS: { taseNumber: string; symbol: string; name: string; below: number; action: string }[] = [
+  { taseNumber: "1150721", symbol: "BZ=F", name: "ברנט", below: 100, action: "למכור חצי מקרן האנרגיה (פרמיית המלחמה יצאה מהנפט)" },
+];
+
+/**
+ * History for an index Yahoo lists without history (207.TA had a single bar on 2026-11-16).
+ * The proxy is a 1:1 tracker of the same index; its prices are in agorot, close to the index points.
+ */
+export const INDEX_HISTORY_PROXY: Record<string, { symbol: string; note: string }> = {
+  "207.TA": { symbol: "HRL-F238.TA", note: "היסטוריה מקרן הראל סל ת\"א ביטחוניות (HRL-F238.TA), שעוקבת אחרי המדד 1:1 — ל-Yahoo אין היסטוריה למדד עצמו" },
+};
 
 /** סקטורים שהתיק כבר חשוף אליהם (ישירות ודרך קרנות ממונפות) — לאיתות חפיפה בהמלצת היום. */
 export const STOCK_SECTORS: Record<string, string> = instrumentConfig.stockSectors;

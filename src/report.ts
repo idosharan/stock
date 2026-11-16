@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import type { ReportReceipt } from "./ai-report.js";
 import type { AnalysisResult, HorizonInfo } from "./analysis.js";
 import type { IndexAnalysis } from "./indices.js";
-import type { StockNews, NewsItem } from "./news.js";
+import type { StockNews, NewsItem, CreatorView } from "./news.js";
 import type { MarketRegime } from "./regime.js";
 import type { CorrPair } from "./risk.js";
 import type { BetaEntry } from "./runner.js";
@@ -18,6 +18,9 @@ import { selectDailyPick } from "./pick.js";
 import { PORTFOLIO } from "./config.js";
 import { buildReportSummarySnapshot, type DataHealth, type QuoteStamp } from "./summary.js";
 import { DocumentStore, migrateLegacyStorage, pruneReportHtml, readHistory, type HistoryKey, type MigrationResult } from "./storage.js";
+import type { EngineValidation, SensitivityRow, LeverageTrigger, MacroView } from "./engine.js";
+import type { GradeValidation } from "./grades.js";
+import type { FundIndexView } from "./engine.js";
 
 export type Mode = "daily" | "weekly";
 
@@ -85,6 +88,17 @@ export interface ReportInput {
   quoteStamps?: Map<string, QuoteStamp>;
   historicalForecasts?: Map<string, HistoricalForecast>;
   dataHealth?: DataHealth;
+  /** SMA200 status of each leveraged/index holding's reference index. */
+  leverageTriggers?: Map<string, LeverageTrigger>;
+  macro?: MacroView;
+  exposure?: SensitivityRow[];
+  engine?: EngineValidation | null;
+  gradeValidation?: GradeValidation | null;
+  creator?: CreatorView;
+  /** Funds analysed through their reference index. */
+  fundViews?: FundIndexView[];
+  /** US market regime (S&P 500 + US breadth) for US names. */
+  usRegime?: MarketRegime | null;
 }
 
 export async function generateReport(input: ReportInput): Promise<string> {
@@ -106,6 +120,14 @@ export async function generateReport(input: ReportInput): Promise<string> {
     quoteStamps,
     historicalForecasts,
     dataHealth,
+    leverageTriggers,
+    macro,
+    exposure,
+    engine,
+    gradeValidation,
+    creator,
+    fundViews,
+    usRegime,
   } = input;
   const forecast = generateForecast(mode, indices, allNews);
 
@@ -164,6 +186,14 @@ export async function generateReport(input: ReportInput): Promise<string> {
     signalDeltas,
     historicalForecasts,
     dataHealth,
+    leverageTriggers,
+    macro,
+    exposure,
+    engine,
+    gradeValidation,
+    creator,
+    fundViews,
+    usRegime,
   };
   const summary = buildReportSummarySnapshot(htmlInput);
   const html = renderReportHtml({ ...htmlInput, summary });

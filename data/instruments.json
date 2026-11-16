@@ -476,35 +476,150 @@
     {
       "symbol": "SPCX",
       "name": "ספייס אקס"
+    },
+    {
+      "symbol": "GOOGL",
+      "name": "גוגל"
+    },
+    {
+      "symbol": "GLD",
+      "name": "זהב (GLD)"
+    },
+    {
+      "symbol": "XLE",
+      "name": "סקטור אנרגיה ארה\"ב (XLE)"
+    },
+    {
+      "symbol": "CIBR",
+      "name": "סקטור סייבר (CIBR)"
+    },
+    {
+      "symbol": "XLV",
+      "name": "סקטור בריאות ארה\"ב (XLV)"
+    },
+    {
+      "name": "מייקרוסופט",
+      "symbol": "MSFT"
+    },
+    {
+      "name": "אפל",
+      "symbol": "AAPL"
+    },
+    {
+      "name": "אמזון",
+      "symbol": "AMZN"
+    },
+    {
+      "name": "מטא",
+      "symbol": "META"
+    },
+    {
+      "name": "טסלה",
+      "symbol": "TSLA"
+    },
+    {
+      "name": "ברודקום",
+      "symbol": "AVGO"
+    },
+    {
+      "name": "AMD",
+      "symbol": "AMD"
+    },
+    {
+      "name": "פלנטיר",
+      "symbol": "PLTR"
+    },
+    {
+      "name": "אורקל",
+      "symbol": "ORCL"
+    },
+    {
+      "name": "נטפליקס",
+      "symbol": "NFLX"
+    },
+    {
+      "name": "סרוויס נאו",
+      "symbol": "NOW"
+    },
+    {
+      "name": "מייקרון",
+      "symbol": "MU"
+    },
+    {
+      "name": "קראודסטרייק",
+      "symbol": "CRWD"
+    },
+    {
+      "name": "פאלו אלטו",
+      "symbol": "PANW"
+    },
+    {
+      "name": "ג'יי.פי מורגן",
+      "symbol": "JPM"
+    },
+    {
+      "name": "ויזה",
+      "symbol": "V"
+    },
+    {
+      "name": "מאסטרקארד",
+      "symbol": "MA"
+    },
+    {
+      "name": "אלי לילי",
+      "symbol": "LLY"
+    },
+    {
+      "name": "יונייטדהלת'",
+      "symbol": "UNH"
+    },
+    {
+      "name": "קוסטקו",
+      "symbol": "COST"
+    },
+    {
+      "name": "וולמארט",
+      "symbol": "WMT"
+    },
+    {
+      "name": "הום דיפו",
+      "symbol": "HD"
+    },
+    {
+      "name": "אקסון מוביל",
+      "symbol": "XOM"
+    },
+    {
+      "name": "קטרפילר",
+      "symbol": "CAT"
+    },
+    {
+      "name": "ג'נרל אלקטריק",
+      "symbol": "GE"
     }
   ],
   "portfolio": [
     {
-      "symbol": "HARL.TA",
-      "name": "הראל השקעות",
-      "entryPrice": 19844,
-      "taseNumber": "585018",
-      "sector": "ביטוח"
-    },
-    {
-      "symbol": "ELAL.TA",
-      "name": "אל על",
-      "entryPrice": 1708,
-      "taseNumber": "1087824",
-      "sector": "תעופה"
+      "symbol": "NVDA",
+      "name": "אנבידיה",
+      "core": true,
+      "note": "$ · החזקת ליבה, חיזוק בתחילת שנה",
+      "sector": "טק ארה\"ב",
+      "entryPrice": 160.31
     },
     {
       "symbol": "SPCX",
       "name": "ספייס אקס",
-      "entryPrice": 163.04,
+      "entryPrice": 156.59,
+      "core": true,
       "note": "$",
       "sector": "טק ארה\"ב"
     },
     {
-      "symbol": "HPQ",
-      "name": "HP Inc",
-      "entryPrice": 25,
-      "note": "$",
+      "symbol": "GOOGL",
+      "name": "גוגל",
+      "entryPrice": 292.32,
+      "note": "$ · נקנתה 5.11.2026",
       "sector": "טק ארה\"ב"
     },
     {
@@ -518,7 +633,7 @@
     },
     {
       "name": "קסם ממונפת פי 3 NDX100",
-      "entryPrice": 27462.37,
+      "entryPrice": 28437.38,
       "note": "נייר 1146976",
       "triggerIndex": "^NDX",
       "investingUrl": "https://www.investing.com/etfs/ksm-6d-lev-nasdaq-100-x3-monthly",
@@ -535,12 +650,14 @@
       "sector": "בנקים"
     },
     {
-      "name": "קסם S&P Energy ETF",
-      "entryPrice": 4502,
-      "note": "נייר 1145903",
-      "taseNumber": "1145903",
-      "investingUrl": "https://www.investing.com/etfs/ksm-4d-sp-energy",
-      "sector": "אנרגיה"
+      "name": "MTF סל ניקיי 225 מנוטרלת מטבע",
+      "entryPrice": 7309.66,
+      "alertBelow": 7090,
+      "note": "נייר 1150531",
+      "triggerIndex": "^N225",
+      "investingUrl": "https://www.investing.com/etfs/mtf-sal-4a-nikkei-225-curr-hdgd",
+      "taseNumber": "1150531",
+      "sector": "יפן"
     }
   ],
   "stockSectors": {
@@ -565,6 +682,7 @@
     "NVDA": "טק ארה\"ב",
     "SPCX": "טק ארה\"ב",
     "HPQ": "טק ארה\"ב",
+    "GOOGL": "טק ארה\"ב",
     "DISI.TA": "נדל\"ן",
     "ILDR.TA": "אחזקות",
     "HLAN.TA": "אחזקות",
@@ -581,6 +699,35 @@
     "MVNE.TA": "נדל\"ן",
     "MISH.TA": "נדל\"ן",
     "AURA.TA": "נדל\"ן",
-    "AFHL.TA": "נדל\"ן"
+    "AFHL.TA": "נדל\"ן",
+    "GLD": "זהב",
+    "XLE": "אנרגיה",
+    "CIBR": "סייבר",
+    "XLV": "בריאות",
+    "MSFT": "טק ארה\"ב",
+    "AAPL": "טק ארה\"ב",
+    "AMZN": "טק ארה\"ב",
+    "META": "טק ארה\"ב",
+    "TSLA": "טק ארה\"ב",
+    "AVGO": "טק ארה\"ב",
+    "AMD": "טק ארה\"ב",
+    "PLTR": "טק ארה\"ב",
+    "ORCL": "טק ארה\"ב",
+    "NFLX": "טק ארה\"ב",
+    "NOW": "טק ארה\"ב",
+    "MU": "טק ארה\"ב",
+    "CRWD": "סייבר",
+    "PANW": "סייבר",
+    "JPM": "פיננסים ארה\"ב",
+    "V": "פיננסים ארה\"ב",
+    "MA": "פיננסים ארה\"ב",
+    "LLY": "בריאות",
+    "UNH": "בריאות",
+    "COST": "צריכה ארה\"ב",
+    "WMT": "צריכה ארה\"ב",
+    "HD": "צריכה ארה\"ב",
+    "XOM": "אנרגיה",
+    "CAT": "תעשייה ארה\"ב",
+    "GE": "תעשייה ארה\"ב"
   }
 }

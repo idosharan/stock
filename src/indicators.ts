@@ -739,6 +739,115 @@ function isBull(c: Candle): boolean {
 }
 
 /**
+ * Trend change by Edwards & Magee, as Micha Stocks teaches it: a hard fall, a higher low after the bottom,
+ * then a close above the falling-highs line and finally above the last lower high.
+ */
+export interface TrendChangeSetup {
+  status: "breakout" | "line-break" | "base" | "none";
+  /** Fall from the major high to the bottom, in percent. */
+  dropPct: number;
+  majorHigh: number;
+  bottom: number;
+  higherLow: number | null;
+  /** Falling-highs line value at the last bar. */
+  line: number | null;
+  /** Last lower high — a close above it confirms the turn. */
+  trigger: number | null;
+  stop: number | null;
+  target: number | null;
+  rr: number | null;
+  /** Percent above the trigger after a breakout ("don't chase" when large). */
+  extendedPct: number | null;
+  /** A down day of at least 2×ATR in the last three sessions — wait three days. */
+  waitThreeDays: boolean;
+}
+
+const SETUP_WINDOW = 160;
+const PIVOT_STRENGTH = 3;
+const MIN_DROP_PCT = 15;
+
+function pivotIndices(candles: Candle[], start: number, kind: "high" | "low"): number[] {
+  const out: number[] = [];
+  for (let i = Math.max(start, PIVOT_STRENGTH); i < candles.length - PIVOT_STRENGTH; i++) {
+    let ok = true;
+    for (let j = i - PIVOT_STRENGTH; j <= i + PIVOT_STRENGTH && ok; j++) {
+      if (j === i) continue;
+      ok = kind === "high" ? candles[j].high < candles[i].high : candles[j].low > candles[i].low;
+    }
+    if (ok) out.push(i);
+  }
+  return out;
+}
+
+function threeDayRule(candles: Candle[], atrs: (number | null)[]): boolean {
+  const n = candles.length;
+  for (let i = Math.max(1, n - 3); i < n; i++) {
+    const a = atrs[i - 1];
+    if (a != null && candles[i - 1].close - candles[i].close >= 2 * a) return true;
+  }
+  return false;
+}
+
+export function trendChangeSetup(candles: Candle[]): TrendChangeSetup | null {
+  const n = candles.length;
+  if (n < 60) return null;
+  const start = Math.max(0, n - SETUP_WINDOW);
+  const atrs = atr(candles, 14);
+  const lastAtr = atrs[n - 1] ?? null;
+  const close = candles[n - 1].close;
+
+  let hi = start;
+  for (let i = start; i < n; i++) if (candles[i].high > candles[hi].high) hi = i;
+  let lo = hi;
+  for (let i = hi; i < n; i++) if (candles[i].low < candles[lo].low) lo = i;
+  const majorHigh = candles[hi].high;
+  const bottom = candles[lo].low;
+  const dropPct = ((majorHigh - bottom) / majorHigh) * 100;
+  const base: TrendChangeSetup = {
+    status: "none", dropPct, majorHigh, bottom, higherLow: null, line: null, trigger: null,
+    stop: null, target: null, rr: null, extendedPct: null, waitThreeDays: threeDayRule(candles, atrs),
+  };
+  if (dropPct < MIN_DROP_PCT || lo === hi) return base;
+
+  const higherLowIdx = pivotIndices(candles, lo + 1, "low").filter((i) => i - lo >= 5 && candles[i].low > bottom).at(-1);
+  if (higherLowIdx == null) return base;
+  const higherLow = candles[higherLowIdx].low;
+  if (close <= higherLow) return base;
+
+  const lowerHighIdx = pivotIndices(candles, hi + 1, "high").filter((i) => candles[i].high < majorHigh).at(-1);
+  const trigger = lowerHighIdx != null ? candles[lowerHighIdx].high : null;
+  let line: number | null = null;
+  if (lowerHighIdx != null) {
+    const slope = (candles[lowerHighIdx].high - majorHigh) / (lowerHighIdx - hi);
+    const value = majorHigh + slope * (n - 1 - hi);
+    line = value > 0 ? value : null;
+  }
+  const stop = lastAtr != null ? higherLow - 0.5 * lastAtr : higherLow;
+  // Measured move: base height added to the breakout level, never above the old high
+  const target = trigger != null ? Math.min(majorHigh, trigger + (trigger - bottom)) : majorHigh;
+  const status: TrendChangeSetup["status"] =
+    trigger != null && close > trigger ? "breakout" : line != null && close > line ? "line-break" : "base";
+  return {
+    ...base,
+    status,
+    higherLow,
+    line,
+    trigger,
+    stop,
+    target,
+    rr: close > stop && target > close ? (target - close) / (close - stop) : null,
+    extendedPct: status === "breakout" && trigger ? (close / trigger - 1) * 100 : null,
+  };
+}
+
+export const SETUP_LABEL: Record<TrendChangeSetup["status"], string> = {
+  breakout: "פריצה מעל השיא היורד האחרון",
+  "line-break": "חצתה את קו השיאים היורדים",
+  base: "בסיס עם שפל עולה, מתחת לקו",
+  none: "אין מבנה שינוי מגמה",
+};
+
+/**
  * מזהה תבניות נרות יפניים נפוצות בנר/שני הנרות האחרונים.
  */
 export function detectCandlePatterns(candles: Candle[]): CandlePattern[] {

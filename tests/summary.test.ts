@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test, { afterEach, beforeEach } from "node:test";
 import { renderReportHtml, type ReportHtmlInput } from "../src/html.js";
 import { generateReport } from "../src/report.js";
-import type { AnalysisResult } from "../src/analysis.js";
+import type { AnalysisResult, HorizonInfo } from "../src/analysis.js";
 import type { IndexAnalysis } from "../src/indices.js";
 import type { NewsItem } from "../src/news.js";
 import { buildReportSummary, buildReportSummarySnapshot } from "../src/summary.js";
@@ -127,6 +127,57 @@ test("digest lists bounded fresh market headlines with sanitized titles and an e
   assert.match(buildReportSummary({ ...reportInput(), results: [stock("DSCT.TA")] }), /===== כותרות שוק אחרונות =====\nאין כותרות זמינות\./);
 });
 
+test("every core holding gets a crowd-wisdom card with stars, rating changes, insiders and a top-up zone", () => {
+  PORTFOLIO.push({ symbol: "NVDA", name: "אנבידיה", core: true, note: "$" });
+  const input = reportInput();
+  const nvda = stock("NVDA", -17);
+  nvda.price = 215.38;
+  nvda.earningsInDays = 27;
+  input.results = [nvda];
+  input.horizons = new Map<string, HorizonInfo>([["NVDA", {
+    weeklyScore: -17, weeklyRec: null, longTerm: null, combined: 1, alignment: "אין", rs: 64,
+    crowd: { analysts: 58, buyPct: 59 / 62, buyPct3m: 58 / 61, targetMean: 328.95, targetHigh: 515, targetLow: 180,
+      upgrades90: 0, downgrades90: 0, targetRaises90: 2, targetCuts90: 0, insiderBuys: 18, insiderSells: 9, institutionsPct: 0.715 },
+    topUp: { zone: "good", label: "אזור קנייה טוב", reasons: ["4 כוכבים — המחיר בהנחה ליעד האנליסטים"] },
+  }]]);
+  const digest = buildReportSummary(input);
+  assert.match(digest, /===== ניתוח החזקות ליבה =====/);
+  assert.match(digest, /אנבידיה \(NVDA\) · החזקת ליבה/);
+  assert.match(digest, /RS 64/);
+  assert.match(digest, /אנליסטים 58: קנייה 95% \(לפני 3 חודשים 95%\) \| יעד ממוצע 328\.95 \(\+52\.7%\) \| טווח 180–515 \| ★★★★☆ \(אי-ודאות גבוהה\)/);
+  assert.match(digest, /90 יום: העלאות דירוג 0 \/ הורדות 0 \| העלאות יעד 2 \/ הורדות 0/);
+  assert.match(digest, /מקורבים 6 חודשים: קניות 18 \/ מכירות 9 \| מוסדיים 71\.5%/);
+  assert.match(digest, /חיזוק בתחילת השנה: אזור קנייה טוב — 4 כוכבים/);
+  assert.match(digest, /רמות לבחינה \(לא הוראת מכירה\)/);
+  const html = renderReportHtml(input);
+  assert.match(html, /<section id="core"/);
+  assert.match(html, /core-zone zone-good/);
+});
+
+test("core holdings without a cost basis are never routed to sell and say why", () => {
+  PORTFOLIO.push({ symbol: "NVDA", name: "אנבידיה", core: true, note: "$" });
+  const input = reportInput();
+  const nvda = stock("NVDA", -40);
+  nvda.recommendation = "הימנעות / מכירה";
+  nvda.signals = ["שבירת רצף עולה", "קרוס דובי"];
+  nvda.patterns = [{ name: "דובי", bias: "bearish" } as AnalysisResult["patterns"][number]];
+  input.results = [nvda];
+  const actions = buildBriefActions(input);
+  assert.equal(actions.sell.length, 0);
+  assert.match(actions.watch.find(line => line.includes("NVDA"))!, /החזקת ליבה \(לא למכירה\) · רמות לבחינה/);
+  const html = renderReportHtml(input);
+  const alerts = html.slice(html.indexOf('id="alerts"'), html.indexOf("</section>", html.indexOf('id="alerts"')));
+  assert.match(alerts, /החזקת ליבה — רמות לבחינה/);
+  assert.doesNotMatch(alerts, /מכירה \/ יציאה<\/span>/);
+  const nvdaRow = snapshotOf(html).portfolio.find((entry: { symbol?: string }) => entry.symbol === "NVDA");
+  assert.equal(nvdaRow.core, true);
+  assert.equal(nvdaRow.entryPrice, undefined);
+  assert.equal(nvdaRow.returnPct, undefined);
+  const digest = buildReportSummary(input);
+  assert.match(digest, /אנבידיה \(NVDA\) · החזקת ליבה \| כניסה: אין מחיר עלות/);
+  assert.match(digest, /אנבידיה \(NVDA\) · החזקת ליבה, לבחינה בלבד:/);
+});
+
 const testPortfolio: HoldingDef[] = [
   { symbol: "DSCT.TA", name: "בנק דיסקונט", entryPrice: 3314.74 },
   { name: "קסם S&P Energy ETF", taseNumber: "1145903", entryPrice: 4502,
@@ -179,6 +230,68 @@ function reportInput(): ReportHtmlInput {
       newsTone: { positive: 0, negative: 0, neutral: 0, label: "ניטרלי" } },
   };
 }
+
+function engineInput(): ReportHtmlInput {
+  const hz: HorizonInfo = { weeklyScore: 30, weeklyRec: "קנייה", longTerm: null, combined: 35, alignment: "חלקית",
+    ranking: 70, engine: "hybrid", factor: { score: 70, rank: 90, aboveSma200: true,
+      parts: { momentum: 90, high52: 80, trend: 85, lowVol: 40, reversal: 30 } } };
+  return {
+    ...reportInput(), results: [stock("DSCT.TA")], horizons: new Map([["DSCT.TA", hz]]),
+    leverageTriggers: new Map([["207.TA", { aboveSma200: false, distancePct: -2.4, sma50BelowSma200: true, drawdownPct: 9.1, warning: true }]]),
+    macro: { flags: [{ id: "oil-shock", label: "הלם נפט", detail: "ברנט 110$" }],
+      geo: { count: 5, total: 20, share: 0.25, percentile: 92, level: "גבוהה", examples: [{ title: "איראן מאיימת", source: "BBC" }] } },
+    exposure: [{ name: "קסם ממונפת פי 3", symbol: "^NDX", leverage: 3, betaNdx: 1, betaBrent: -0.2, betaTa35: 0.3, betaUsdIls: null,
+      brentUp10: -6, ndxDown5: -15, ta35Down5: -4.5, usdUp3: null }],
+    engine: { version: 1, generatedAt: "2026-10-19T00:00:00.000Z", horizons: [20], keyHorizon: 20, splitDate: "2025-06-01",
+      dates: 200, symbols: 120, selection: [], evaluation: [], chosen: "V2", adopted: true, reason: "פקטורים במשקלי מחקר אומץ" },
+  };
+}
+
+test("HTML shows factor column, engine status, SMA200 trigger, macro and exposure", () => {
+  const html = renderReportHtml(engineInput()).replace(/<script[\s\S]*?<\/script>/g, "");
+  assert.match(html, /פקטורים/);
+  assert.match(html, /מנוע היברידי פעיל/);
+  assert.match(html, /מתחת לממוצע 200/);
+  assert.match(html, /הלם נפט/);
+  assert.match(html, /רגישות התיק לתרחישים/);
+  assert.match(html, /-15\.0%/);
+  assert.match(html, /×3/);
+  assert.match(html, /אחוזון <bdi>92<\/bdi>/);
+  assert.match(html, /\(BBC\)/);
+});
+
+test("summary reports factor score, SMA200 trigger, macro flags and exposure", () => {
+  const summary = buildReportSummary(engineInput());
+  assert.match(summary, /פקטורים 70 \(דירוג 90\)/);
+  assert.match(summary, /ממוצע 200: מתחת \(-2\.4%\)/);
+  assert.match(summary, /דגלי מאקרו: הלם נפט/);
+  assert.match(summary, /כותרות גאופוליטיות: גבוהה/);
+  assert.match(summary, /===== רגישות התיק לתרחישים =====/);
+  assert.match(summary, /נאסד"ק −5%: -15%/);
+  assert.match(summary, /דולר \+3%: לא זמין/);
+  assert.match(summary, /מנוע היברידי פעיל/);
+});
+
+test("HTML and summary show evidence grades, red flags and the forward-validation status", () => {
+  const input = engineInput();
+  input.horizons!.get("DSCT.TA")!.grades = {
+    pct: { momentum: 92, revisions: 70, surprise: null, quality: 45, value: 10, risk: 30, consensus: 85, demand: null },
+    letters: { momentum: "A", revisions: "B", surprise: null, quality: "C", value: "F", risk: "D", consensus: "A", demand: null },
+    redFlags: ["שורט 25% מהמניות הצפות"],
+  };
+  input.gradeValidation = { version: 1, generatedAt: "2026-10-19T00:00:00.000Z", dates: 12, minDates: 40,
+    grades: Object.fromEntries(["momentum", "revisions", "surprise", "quality", "value", "risk", "consensus", "demand"].map((k) => [k, { ic: null, t: null, dates: 0, passed: false }])) as never };
+  const html = renderReportHtml(input).replace(/<script[\s\S]*?<\/script>/g, "");
+  assert.match(html, /מומנטום A · רוויזיות B · הפתעות — · איכות C · שווי F · סיכון D · קונצנזוס A · ביקוש —/);
+  assert.match(html, /<bdi dir="ltr">AB—CFDA—<\/bdi> 🚩/);
+  assert.match(html, /בבדיקה קדימה: 12\/40 תאריכים/);
+  const summary = buildReportSummary(input);
+  assert.match(summary, /ציונים: מומנטום A · רוויזיות B/);
+  assert.match(summary, /דגלים: שורט 25%/);
+  assert.match(summary, /ציוני ראיות: בבדיקה קדימה: 12\/40/);
+  assert.match(summary, /• איראן מאיימת \(BBC\)/);
+  assert.match(summary, /אחוזון 92 מול 60 יום/);
+});
 
 test("zero analyzed results reject before changing reports, summaries or histories", async () => {
   const root = mkdtempSync(join(tmpdir(), "report-summary-"));
@@ -422,7 +535,7 @@ test("runner captures actual daily bar dates, missing analyses and quote failure
       fetchTasePrice: async paper => paper === '1233170' ? 4800 : null,
     }});
     const news = await import(${JSON.stringify(`${source}news.ts`)});
-    mock.module(${JSON.stringify(`${source}news.ts`)}, { namedExports: { ...news, fetchAllNews: async () => stalled === 'news' ? new Promise(() => {}) : [] }});
+    mock.module(${JSON.stringify(`${source}news.ts`)}, { namedExports: { ...news, fetchAllNews: async () => stalled === 'news' ? new Promise(() => {}) : [], fetchFollowedVideos: async () => [] }});
     const fundamentals = await import(${JSON.stringify(`${source}fundamentals.ts`)});
     mock.module(${JSON.stringify(`${source}fundamentals.ts`)}, { namedExports: { ...fundamentals, getFundamentals: async () => stalled === 'fundamentals' ? new Promise(() => {}) : null }});
     const indices = await import(${JSON.stringify(`${source}indices.ts`)});
